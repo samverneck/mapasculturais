@@ -1,8 +1,8 @@
 <h1>Como usar</h1>
-<a href="{{asset:manual.pdf}}">Faça download do manual completo.</a>
+<a href="{{asset:mapasculturais_manual.odp}}">Faça download do manual completo.</a>
 
 <section id="como-usar-encontre" class="como-usar clearfix">
-    <img class="como-usar-img alignleft" src="{{asset:img/tour/tour01.png}}" alt="" />
+    <img class="como-usar-img alignleft" src="{{asset:img/tour01.png}}" alt="" />
     <div class="como-usar-content alignright">
         <h2>Encontre</h2>
         Digite uma palavra-chave no campo de busca e escolha no botão ao lado a categoria daquilo que você procura: eventos, espaços culturais, agentes ou projetos.

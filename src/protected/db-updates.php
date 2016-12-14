@@ -6,402 +6,264 @@ $em = $app->em;
 $conn = $em->getConnection();
 
 
-return array(
-    'alter table user add column profile_id' => function() use ($app, $conn){
-        if($conn->fetchAll("SELECT column_name FROM information_schema.columns WHERE table_name = 'usr' AND column_name = 'profile_id'")){
-            return true;
-        }
+function __table_exists($table_name) {
+    $app = App::i();
+    $em = $app->em;
+    $conn = $em->getConnection();
+    
+    if($conn->fetchAll("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = '$table_name';")){
+        return true;
+    } else {
+        return false;
+    }
+}
 
+function __column_exists($table_name, $column_name) {
+    $app = App::i();
+    $em = $app->em;
+    $conn = $em->getConnection();
+    
+    if($conn->fetchAll("SELECT column_name FROM information_schema.columns WHERE table_name='$table_name' and column_name='$column_name'")){
+        return true;
+    } else {
+        return false;
+    }
+}
 
-        echo "adicionando coluna profile_id à tabela de usuários\n";
-
-        $conn->executeQuery('ALTER TABLE usr ADD COLUMN profile_id INTEGER;');
-
-        echo "criando user_profile_fk\n";
-        $conn->executeQuery('ALTER TABLE ONLY usr ADD CONSTRAINT user_profile_fk FOREIGN KEY (profile_id) REFERENCES agent(id);');
-
-        $agents = $conn->fetchAll("SELECT id, user_id FROM agent WHERE is_user_profile = TRUE");
-
-        foreach($agents as $agent){
-            echo "setando o user profile do usuário {$agent['user_id']} como o agente de id {$agent['id']}\n";
-            $conn->executeQuery('UPDATE usr SET profile_id = ' . $agent['id'] . ' WHERE id = ' . $agent['user_id']);
-        }
-
-        echo "removendo a coluna is_user_profile da tabela agent\n";
-        $conn->executeQuery('ALTER TABLE agent DROP COLUMN is_user_profile;');
-    },
-
-    'create table registration ' => function() use ($conn){
-
-        if($conn->fetchAll("SELECT tablename from pg_catalog.pg_tables WHERE tablename = 'registration' AND schemaname = 'public'")){
-            return true;
-        }
-
-        echo "criando tabela registration\n";
-
+return [
+    'new random id generator' => function () use ($conn) {
         $conn->executeQuery("
-            CREATE TABLE registration (
-                id integer NOT NULL,
-                project_id integer NOT NULL,
-                category varchar(255),
-                agent_id integer NOT NULL,
-                create_timestamp timestamp without time zone DEFAULT now() NOT NULL,
-                sent_timestamp timestamp without time zone,
-                status integer NOT NULL
-            );");
-
-        echo "criando sequencia registration_id_seq\n";
-        $conn->executeQuery("
-            CREATE SEQUENCE registration_id_seq
+            CREATE SEQUENCE pseudo_random_id_seq
                 START WITH 1
                 INCREMENT BY 1
                 NO MINVALUE
                 NO MAXVALUE
                 CACHE 1;");
 
-        echo "setando valor default do id\n";
-        $conn->executeQuery("ALTER TABLE ONLY registration ALTER COLUMN id SET DEFAULT nextval('registration_id_seq'::regclass);");
+        $conn->executeQuery("
+            CREATE OR REPLACE FUNCTION pseudo_random_id_generator() returns int AS $$
+                DECLARE
+                    l1 int;
+                    l2 int;
+                    r1 int;
+                    r2 int;
+                    VALUE int;
+                    i int:=0;
+                BEGIN
+                    VALUE:= nextval('pseudo_random_id_seq');
+                    l1:= (VALUE >> 16) & 65535;
+                    r1:= VALUE & 65535;
+                    WHILE i < 3 LOOP
+                        l2 := r1;
+                        r2 := l1 # ((((1366 * r1 + 150889) % 714025) / 714025.0) * 32767)::int;
+                        l1 := l2;
+                        r1 := r2;
+                        i := i + 1;
+                    END LOOP;
+                    RETURN ((r1 << 16) + l1);
+                END;
+            $$ LANGUAGE plpgsql strict immutable;");
+    },
 
-        echo "criando chave primária\n";
-        $conn->executeQuery("ALTER TABLE ONLY registration
-                                ADD CONSTRAINT registration_pkey PRIMARY KEY (id);");
+    'migrate gender' => function() use ($conn) {
+        $conn->executeQuery("UPDATE agent_meta SET value='Homem' WHERE key='genero' AND value='Masculino'");
+        $conn->executeQuery("UPDATE agent_meta SET value='Mulher' WHERE key='genero' AND value='Feminino'");
+    },
 
 
-        echo "criando agent FK\n";
-        $conn->executeQuery("ALTER TABLE ONLY registration
-                                ADD CONSTRAINT registration_agent_id_fk FOREIGN KEY (agent_id) REFERENCES agent(id) ON DELETE SET NULL;");
+    'remove circular references again... ;)' => function() use ($conn) {
+        $conn->executeQuery("UPDATE agent SET parent_id = null WHERE id = parent_id");
 
+        $conn->executeQuery("UPDATE agent SET parent_id = null WHERE id IN (SELECT profile_id FROM usr)");
 
-        echo "criando project FK\n";
-        $conn->executeQuery("ALTER TABLE ONLY registration
-                                ADD CONSTRAINT registration_project_fk FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE;");
+        return false; // executa todas as vezes só para garantir...
+    },
 
+    'create table user apps' => function() use ($conn) {
+        if(__table_exists('user_app')){
+            echo "TABLE user_app ALREADY EXISTS";
+            return true;
+        }
+        
+        $conn->executeQuery("CREATE TABLE user_app (
+                                public_key character varying(64) NOT NULL,
+                                private_key character varying(128) NOT NULL,
+                                user_id integer NOT NULL,
+                                name text NOT NULL,
+                                status integer NOT NULL,
+                                create_timestamp timestamp NOT NULL
+                                );");
+
+        $conn->executeQuery("ALTER TABLE ONLY user_app ADD CONSTRAINT user_app_pk PRIMARY KEY (public_key);");
+
+        $conn->executeQuery("ALTER TABLE ONLY user_app ADD CONSTRAINT usr_user_app_fk FOREIGN KEY (user_id) REFERENCES usr(id);");
 
     },
 
-    'create table registration_meta' => function() use($conn){
-        if($conn->fetchAll("SELECT tablename from pg_catalog.pg_tables WHERE tablename = 'registration_meta' AND schemaname = 'public'")){
+
+    'create table user_meta' => function() use ($conn) {
+
+        if(__table_exists('user_meta')){
+            echo "TABLE user_meta ALREADY EXISTS";
             return true;
         }
 
-        echo "create table registration_meta\n";
-        $conn->executeQuery("CREATE TABLE registration_meta (
+        $conn->executeQuery("CREATE TABLE user_meta (
                                 object_id integer NOT NULL,
                                 key character varying(32) NOT NULL,
-                                value text
-                            );");
+                                value text,
+                                id integer NOT NULL);");
 
-        echo "create registration meta primary key\n";
-        $conn->executeQuery("ALTER TABLE ONLY registration_meta
-                                ADD CONSTRAINT registration_meta_pkey PRIMARY KEY (object_id, key);");
+        $conn->executeQuery("CREATE SEQUENCE user_meta_id_seq
+                                START WITH 1
+                                INCREMENT BY 1
+                                NO MINVALUE
+                                NO MAXVALUE
+                                CACHE 1;");
 
-        echo "create registration_meta key value index\n";
-        $conn->executeQuery("CREATE INDEX registration_meta_key_value_index ON registration_meta USING btree (key, value);");
+        $conn->executeQuery("ALTER SEQUENCE user_meta_id_seq OWNED BY user_meta.id;");
+        $conn->executeQuery("ALTER TABLE ONLY user_meta ALTER COLUMN id SET DEFAULT nextval('user_meta_id_seq'::regclass);");
+        $conn->executeQuery("ALTER TABLE ONLY user_meta ADD CONSTRAINT user_meta_pk PRIMARY KEY (id);");
+        $conn->executeQuery("CREATE INDEX user_meta_owner_key_index ON user_meta USING btree (object_id, key);");
+        $conn->executeQuery("CREATE INDEX user_meta_owner_key_value_index ON user_meta USING btree (object_id, key, value);");
+        $conn->executeQuery("ALTER TABLE ONLY user_meta ADD CONSTRAINT usr_user_meta_fk FOREIGN KEY (object_id) REFERENCES usr(id);");
     },
 
-    'create table registration' => function() use ($conn){
-        if($conn->fetchAll("SELECT tablename from pg_catalog.pg_tables WHERE tablename = 'registration_file_configuration' AND schemaname = 'public'")){
+    'create seal and seal relation tables' => function() use ($conn) {
+
+        if(__table_exists('seal')){
+            echo "TABLE seal ALREADY EXISTS";
             return true;
         }
 
-        echo "criando tabela registration\n";
+        $conn->executeQuery("CREATE TABLE seal (id INT NOT NULL, agent_id INT NOT NULL, name VARCHAR(255) NOT NULL, short_description TEXT DEFAULT NULL, long_description TEXT DEFAULT NULL, valid_period SMALLINT NOT NULL, create_timestamp TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, status SMALLINT NOT NULL, certificate_text TEXT DEFAULT NULL, PRIMARY KEY(id));");
+        $conn->executeQuery("CREATE SEQUENCE seal_id_seq INCREMENT BY 1 MINVALUE 1 START 1;");
+        $conn->executeQuery("CREATE TABLE seal_relation (id INT NOT NULL, seal_id INT DEFAULT NULL, object_id INT NOT NULL, create_timestamp TIMESTAMP(0) WITHOUT TIME ZONE DEFAULT NULL, status SMALLINT DEFAULT NULL, object_type VARCHAR(255) NOT NULL, agent_id INTEGER NOT NULL, PRIMARY KEY(id));");
+        $conn->executeQuery("CREATE SEQUENCE seal_relation_id_seq INCREMENT BY 1 MINVALUE 1 START 1;");
+        $conn->executeQuery("CREATE TABLE seal_meta (id INT NOT NULL, object_id INT DEFAULT NULL, key VARCHAR(255) NOT NULL, value TEXT DEFAULT NULL, PRIMARY KEY(id));");
+        $conn->executeQuery("CREATE SEQUENCE seal_meta_id_seq INCREMENT BY 1 MINVALUE 1 START 1;");
+        $conn->executeQuery("ALTER TABLE seal ADD CONSTRAINT seal_fk FOREIGN KEY (agent_id) REFERENCES agent (id) NOT DEFERRABLE INITIALLY IMMEDIATE;");
+        $conn->executeQuery("ALTER TABLE seal_meta ADD CONSTRAINT seal_meta_fk FOREIGN KEY (object_id) REFERENCES seal (id) NOT DEFERRABLE INITIALLY IMMEDIATE;");
+        $conn->executeQuery("ALTER TABLE ONLY seal_relation ADD CONSTRAINT seal_relation_fk FOREIGN KEY (seal_id) REFERENCES seal(id);");
 
-        echo "create table registration_file_configuration\n";
-        $conn->executeQuery("CREATE TABLE registration_file_configuration (
-                                id SERIAL PRIMARY KEY,
-                                project_id integer NOT NULL,
-                                title character varying(255) NOT NULL,
-                                description text,
-                                required boolean NOT NULL DEFAULT false
-                            );");
-
-        echo "criando registration_file_configuration to project FK\n";
-        $conn->executeQuery("ALTER TABLE ONLY registration_file_configuration
-                                ADD CONSTRAINT registration_meta_project_fk FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE SET NULL;");
     },
 
-    'alter table registration add column registration_categories' => function() use($conn){
-        echo "adicionando coluna registration_categories\n";
-        $conn->executeQuery('ALTER TABLE project ADD COLUMN registration_categories text;');
+    'resize entity meta key columns' => function() use($conn) {
+        $conn->executeQuery('ALTER TABLE space_meta ALTER COLUMN key TYPE varchar(128)');
+        $conn->executeQuery('ALTER TABLE agent_meta ALTER COLUMN key TYPE varchar(128)');
+        $conn->executeQuery('ALTER TABLE event_meta ALTER COLUMN key TYPE varchar(128)');
+        $conn->executeQuery('ALTER TABLE project_meta ALTER COLUMN key TYPE varchar(128)');
+        $conn->executeQuery('ALTER TABLE user_meta ALTER COLUMN key TYPE varchar(128)');
     },
 
-    'alter table project add columns use_registrations AND publihed_registrations' => function() use($conn){
-        if($conn->fetchAll("SELECT column_name FROM information_schema.columns WHERE table_name = 'project' AND column_name = 'use_registrations'")){
+
+    'create registration field configuration table' => function () use($conn){
+        if(__table_exists('registration_field_configuration')){
+            echo "TABLE registration_field_configuration ALREADY EXISTS";
             return true;
         }
-
-        echo "adicionando coluna use_registrations\n";
-        $conn->executeQuery("ALTER TABLE project ADD COLUMN use_registrations BOOLEAN NOT NULL DEFAULT FALSE;");
-
-        echo "adicionando coluna published_registrations\n";
-        $conn->executeQuery("ALTER TABLE project ADD COLUMN published_registrations BOOLEAN NOT NULL DEFAULT FALSE;");
-
-        echo "removendo coluna public_registration\n";
-        $conn->executeQuery("ALTER TABLE project DROP COLUMN public_registration;");
+        $conn->executeQuery("CREATE TABLE registration_field_configuration (id INT NOT NULL, project_id INT DEFAULT NULL, title VARCHAR(255) NOT NULL, description TEXT DEFAULT NULL, categories TEXT DEFAULT NULL, required BOOLEAN NOT NULL, field_type VARCHAR(255) NOT NULL, field_options VARCHAR(255) NOT NULL, PRIMARY KEY(id));");
+        $conn->executeQuery("CREATE INDEX IDX_60C85CB1166D1F9C ON registration_field_configuration (project_id);");
+        $conn->executeQuery("COMMENT ON COLUMN registration_field_configuration.categories IS '(DC2Type:array)';");
+        $conn->executeQuery("CREATE SEQUENCE registration_field_configuration_id_seq INCREMENT BY 1 MINVALUE 1 START 1;");
+        $conn->executeQuery("ALTER TABLE registration_field_configuration ADD CONSTRAINT FK_60C85CB1166D1F9C FOREIGN KEY (project_id) REFERENCES project (id) NOT DEFERRABLE INITIALLY IMMEDIATE;");
     },
 
-    'create or replace function random_id_generator' => function() use($conn){
-        $conn->executeQuery('
-            CREATE FUNCTION random_id_generator(table_name character varying, initial_range bigint) RETURNS bigint
-                LANGUAGE plpgsql
-                AS $$DECLARE
-              rand_int INTEGER;
-              count INTEGER := 1;
-              statement TEXT;
-            BEGIN
-              WHILE count > 0 LOOP
-                initial_range := initial_range * 10;
-
-                rand_int := (RANDOM() * initial_range)::BIGINT + initial_range / 10;
-
-                statement := CONCAT(\'SELECT count(id) FROM \', table_name, \' WHERE id = \', rand_int);
-
-                EXECUTE statement;
-                IF NOT FOUND THEN
-                  count := 0;
-                END IF;
-
-              END LOOP;
-              RETURN rand_int;
-            END;
-            $$;');
-    },
-
-    'alter table registration add columns agents_data' => function() use($conn){
-        if($conn->fetchAll("SELECT column_name FROM information_schema.columns WHERE table_name = 'registration' AND column_name = 'agents_data'")){
+    'alter table registration_file_configuration add categories' => function () use($conn){
+        if(__column_exists('registration_file_configuration', 'categories')){
+            echo "ALREADY APPLIED";
             return true;
         }
-
-        echo "adicionando coluna agents_data\n";
-        $conn->executeQuery("ALTER TABLE registration ADD COLUMN agents_data TEXT;");
-
+        
+        $conn->executeQuery("ALTER TABLE registration_file_configuration DROP CONSTRAINT IF EXISTS registration_meta_project_fk;");
+        $conn->executeQuery("ALTER TABLE registration_file_configuration ADD categories TEXT DEFAULT NULL;");
+        $conn->executeQuery("ALTER TABLE registration_file_configuration ALTER id DROP DEFAULT;");
+        $conn->executeQuery("ALTER TABLE registration_file_configuration ALTER project_id DROP NOT NULL;");
+        $conn->executeQuery("ALTER TABLE registration_file_configuration ALTER required DROP DEFAULT;");
+        $conn->executeQuery("COMMENT ON COLUMN registration_file_configuration.categories IS '(DC2Type:array)';");
+        $conn->executeQuery("ALTER TABLE registration_file_configuration ADD CONSTRAINT FK_209C792E166D1F9C FOREIGN KEY (project_id) REFERENCES project (id) NOT DEFERRABLE INITIALLY IMMEDIATE;");
     },
 
-    'import new openid data' => function () use($conn){
+    'verified seal migration' => function () use($conn){
+        $agent_id = $conn->fetchColumn("select profile_id
+                    from usr
+                    where id = (
+                        select min(usr_id)
+                        from role
+                        where name = 'superAdmin'
+                    )");
+	    $conn->executeQuery(
+            "INSERT INTO seal VALUES(
+                1,
+                $agent_id,
+                'Selo Mapas',
+                'Descrição curta Selo Mapas','Descrição longa Selo Mapas',0,CURRENT_TIMESTAMP,1
+            );"
+        );
+ 	    $conn->executeQuery("INSERT INTO seal_relation
+            SELECT nextval('seal_relation_id_seq'), 1, id, CURRENT_TIMESTAMP, 1, 'MapasCulturais\Entities\Agent', $agent_id FROM agent WHERE is_verified = 't';");
+ 	    $conn->executeQuery("INSERT INTO seal_relation SELECT nextval('seal_relation_id_seq'), 1, id, CURRENT_TIMESTAMP, 1, 'MapasCulturais\Entities\Space', $agent_id FROM space WHERE is_verified = 't';");
+ 	    $conn->executeQuery("INSERT INTO seal_relation SELECT nextval('seal_relation_id_seq'), 1, id, CURRENT_TIMESTAMP, 1, 'MapasCulturais\Entities\Project', $agent_id FROM project WHERE is_verified = 't';");
+ 	    $conn->executeQuery("INSERT INTO seal_relation SELECT nextval('seal_relation_id_seq'), 1, id, CURRENT_TIMESTAMP, 1, 'MapasCulturais\Entities\Event', $agent_id FROM event WHERE is_verified = 't';");
+    },
 
-        // this must be run on the open id server
-        // sudo -u postgres psql -d "openid-staging" -c "COPY (select u.username, u.email, p.openid from auth_user u, openid_provider_openid p where p.user_id = u.id) TO STDOUT" > /tmp/openid-new-data.tmp
-        $file = '/tmp/openid-new-data.tmp';
-        if(!file_exists($file)){
-            return false;
+    'create update timestamp entities' => function () use($conn) {
+    	$conn->executeQuery("ALTER TABLE agent ADD COLUMN update_timestamp TIMESTAMP(0) WITHOUT TIME ZONE;");
+    	$conn->executeQuery("ALTER TABLE space ADD COLUMN update_timestamp TIMESTAMP(0) WITHOUT TIME ZONE;");
+    	$conn->executeQuery("ALTER TABLE project ADD COLUMN update_timestamp TIMESTAMP(0) WITHOUT TIME ZONE;");
+    	$conn->executeQuery("ALTER TABLE event ADD COLUMN update_timestamp TIMESTAMP(0) WITHOUT TIME ZONE;");
+    	$conn->executeQuery("ALTER TABLE seal ADD COLUMN update_timestamp TIMESTAMP(0) WITHOUT TIME ZONE;");
+    },
+            
+    'update entities last_update_timestamp with user last log timestamp' => function () use($conn,$app) {
+        $agents = $conn->fetchAll("SELECT a.id, u.last_login_timestamp FROM agent a, usr u WHERE u.id = a.user_id");
+        
+        foreach($agents as $agent){
+            $agent = (object) $agent;
+            $conn->executeQuery("UPDATE space SET update_timestamp = '{$agent->last_login_timestamp}' WHERE agent_id = {$agent->id} AND update_timestamp IS NULL");
+            $conn->executeQuery("UPDATE event SET update_timestamp = '{$agent->last_login_timestamp}' WHERE agent_id = {$agent->id} AND update_timestamp IS NULL");
+            $conn->executeQuery("UPDATE seal SET update_timestamp = '{$agent->last_login_timestamp}' WHERE agent_id = {$agent->id} AND update_timestamp IS NULL");
+            $conn->executeQuery("UPDATE project SET update_timestamp = '{$agent->last_login_timestamp}' WHERE agent_id = {$agent->id} AND update_timestamp IS NULL");
         }
-        $data = file_get_contents($file);
+        
+        $conn->executeQuery("UPDATE agent SET update_timestamp = u.last_login_timestamp FROM (SELECT id, last_login_timestamp FROM usr) AS u WHERE user_id = u.id AND update_timestamp IS NULL");
+    },
 
+    'Fix field options field type from registration field configuration' => function () use($conn) {
+        $conn->executeQuery("ALTER TABLE registration_field_configuration ALTER COLUMN field_options TYPE text;");
+    },
 
-        $excecoes_data = "http://id.spcultura.prefeitura.sp.gov.br/users/volusiano/	comunicavolusiano@gmail.com	cybelle.a.oliveira@gmail.com
-http://id.spcultura.prefeitura.sp.gov.br/users/Parque/	parquechacaradojoquei@hotmail.com	parquechacaradojoquei@gmail.com
-http://id.spcultura.prefeitura.sp.gov.br/users/rosanaaraujo/	rosanadole@yahoo.com	rosanadole@yahoo.com.br
-http://id.spcultura.prefeitura.sp.gov.br/users/tonynevesneves/	tonyneves@yahoo.com.br	tonyneves2003@yahoo.com.br";
-        $excecoes = explode("\n", $excecoes_data);
-        foreach($excecoes as $ex){
-            $e = explode("\t", $ex);
-            list($auid, $old_email, $new_email) = $e;
+    'Created owner seal relation field' => function () use($conn) {
+        $conn->executeQuery("ALTER TABLE seal_relation ADD COLUMN owner_id INTEGER;");
+        $agent_id = $conn->fetchColumn("select profile_id
+                    from usr
+                    where id = (
+                        select min(usr_id)
+                        from role
+                        where name = 'superAdmin'
+                    )");
+        $conn->executeQuery("UPDATE seal_relation SET owner_id = '$agent_id' WHERE owner_id IS NULL;");
+    },
 
-            $sql = "UPDATE usr SET email='$new_email' WHERE auth_uid = '$auid' AND email = '$old_email'\n";
-            echo $sql;
-            $conn->executeQuery($sql);
+    'Add field for maximum size from registration field configuration' => function () use($conn) {
+        $conn->executeQuery("ALTER TABLE registration_field_configuration ADD COLUMN max_size text;");
+    },
+    
+    'create avatar thumbs' => function() use($conn){
+        $conn->executeQuery("DELETE FROM file WHERE object_type = 'MapasCulturais\Entities\Agent' AND object_id NOT IN (SELECT id FROM agent)");
+        $conn->executeQuery("DELETE FROM file WHERE object_type = 'MapasCulturais\Entities\Space' AND object_id NOT IN (SELECT id FROM space)");
+        $conn->executeQuery("DELETE FROM file WHERE object_type = 'MapasCulturais\Entities\Project' AND object_id NOT IN (SELECT id FROM project)");
+        $conn->executeQuery("DELETE FROM file WHERE object_type = 'MapasCulturais\Entities\Event' AND object_id NOT IN (SELECT id FROM event)");
+        $conn->executeQuery("DELETE FROM file WHERE object_type = 'MapasCulturais\Entities\Seal' AND object_id NOT IN (SELECT id FROM seal)");
+        
+        $files = $this->repo('SealFile')->findBy(['group' => 'avatar']);
+        
+        foreach($files as $f){
+            $f->transform('avatarSmall');
+            $f->transform('avatarMedium');
+            $f->transform('avatarBig');
         }
-
-
-        $users = explode("\n",$data);
-        foreach($users as $u){
-            if(!$u)
-                continue;
-
-            $d = explode("\t", $u);
-            list($username, $email, $openid) = $d;
-            if(count($d) != 3)
-                var_dump($d);
-
-            $auid = App::i()->config['auth.config']['login_url'] . str_replace('/openid/','',$openid) . '/';
-            $sql = "UPDATE usr SET auth_uid = '$auid' WHERE email = '$email'\n";
-            echo $sql;
-            $conn->executeQuery($sql);
-        }
-        return true;
-    },
-
-    'replace "relacioanr" in notification messages asd' => function() use($conn) {
-        $count = $conn->fetchAssoc("SELECT count(*) AS total FROM notification WHERE message LIKE '%relacioanr%'");
-        if($count['total'] > 0){
-            echo 'Atualizando ' . $count['total'] . ' notificações com o erro de grafia "relacioanr"'."\n";
-            $sql = "UPDATE notification SET message = replace(message, 'relacioanr', 'relacionar') WHERE message LIKE '%relacioanr%'";
-            echo $sql;
-            $conn->executeQuery($sql);
-        }
-        return true;
-    },
-
-    'fix select values' => function() use($conn){
-        $conn->executeQuery("
-            UPDATE
-                agent_meta
-            SET
-                value = ''
-            WHERE
-                (key = 'raca' AND value='Selecione a raça/cor se for pessoa física') OR
-                (key = 'genero' AND value='Selecione o gênero se for pessoa física')
-                ");
-
-        $conn->executeQuery("
-            UPDATE
-                space_meta
-            SET
-                value = ''
-            WHERE
-                (key = 'acessibilidade' AND value='Acessibilidade')
-                ");
-
-        $conn->executeQuery("
-            UPDATE
-                event_meta
-            SET
-                value = ''
-            WHERE
-                (key = 'classificacaoEtaria' AND value='Informe a classificação etária do evento') OR
-                (key = 'traducaoLibras' AND value='Tradução para LIBRAS') OR
-                (key = 'descricaoSonora' AND value='Áudio descrição')
-                ");
-        return true;
-    },
-
-    'agent_meta location from precise/approximate to public/private' => function() use($conn) {
-        echo 'Inserindo em agent_meta "localização" = "Pública" onde "precisao" = "Precisa"'."\n";
-        $conn->executeQuery("
-            INSERT INTO agent_meta (object_id, key, value)
-            SELECT object_id, 'localizacao', 'Pública' FROM agent_meta WHERE key = 'precisao' AND value = 'Precisa'
-        ");
-        echo 'Inserindo em agent_meta "localização" = "Privada" onde "precisao" = "Aproximada"'."\n";
-        $conn->executeQuery("
-            INSERT INTO agent_meta (object_id, key, value)
-            SELECT object_id, 'localizacao', 'Privada' FROM agent_meta WHERE key = 'precisao' AND value = 'Aproximada'
-        ");
-        echo 'Inserindo em agent_meta "localização" = "Privada" para agentes com _geo_location mas sem precisão definida'."\n";
-        $conn->executeQuery("
-            INSERT INTO agent_meta (object_id, key, value)
-            SELECT id, 'localizacao', 'Privada' FROM agent
-            WHERE _geo_location IS NOT NULL AND _geo_location != ST_Transform(ST_GeomFromText('POINT(0 0)',4326),4326)
-            AND id NOT IN (SELECT DISTINCT (object_id) FROM agent_meta WHERE key = 'precisao')
-        ");
-        return true;
-    },
-
-    'migrate agent privateLocation from agent_meta to entity' => function() use($conn) {
-         if($conn->fetchAll("SELECT column_name FROM information_schema.columns WHERE table_name = 'agent' AND column_name = 'public_location'")){
-            return true;
-        }
-        echo "Adicionando coluna public_location\n";
-        $conn->executeQuery("ALTER TABLE agent ADD COLUMN public_location BOOLEAN DEFAULT NULL;");
-
-        echo 'Migrando dados do metadado localizacao para public_location';
-        $conn->executeQuery("
-            UPDATE agent SET public_location = TRUE
-            WHERE id IN (SELECT object_id FROM agent_meta WHERE key = 'localizacao' AND value = 'Pública')
-        ");
-        $conn->executeQuery("
-            UPDATE agent SET public_location = FALSE
-            WHERE id IN (SELECT object_id FROM agent_meta WHERE key = 'localizacao' AND value = 'Privada')
-        ");
-        return true;
-    },
-
-    'regenerate sent registration zip files' => function() use($app){
-        $registrations = $app->repo('Registration')->findAll();
-        foreach($registrations as $registration){
-            if($registration->status > 0 && $registration->files){
-                $app->storage->createZipOfEntityFiles($registration, $fileName = $registration->number . ' - ' . uniqid() . '.zip');
-            }
-        }
-        return true;
-    },
-
-    'alter table file add column parent_id' => function() use($conn) {
-        echo "adicionando coluna parent_id a tabela file\n";
-        $conn->executeQuery("ALTER TABLE file ADD COLUMN parent_id INTEGER DEFAULT NULL;");
-
-        echo "adicionando FK file_file_fk";
-        $conn->executeQuery("
-        ALTER TABLE ONLY file
-            ADD CONSTRAINT file_file_fk FOREIGN KEY (parent_id) REFERENCES file(id);");
-
-        echo "deletando arquivos órfãos\n";
-        $conn->executeQuery("DELETE FROM file WHERE object_type = 'MapasCulturais\Entities\File' AND object_id NOT IN (SELECT id FROM file WHERE object_type != 'MapasCulturais\Entities\File')");
-
-        echo "atualizando o parent_id dos files que têm pai\n";
-        $conn->executeQuery("UPDATE file SET parent_id = object_id WHERE object_type = 'MapasCulturais\Entities\File'");
-
-        echo "atualizando o owner dos files que têm pai\n";
-        $conn->executeQuery("
-        UPDATE
-            file AS f
-        SET
-            grp = CONCAT('img:', f.grp),
-            object_type   = f2.object_type,
-            object_id     = f2.object_id
-        FROM (
-            SELECT * FROM file
-        ) as f2
-        WHERE
-            f.parent_id = f2.id");
-
-    },
-
-    'alter table term_relation add column id' => function() use($conn){
-        if($conn->fetchAll("SELECT column_name FROM information_schema.columns WHERE table_name = 'term_relation' AND column_name = 'id'")){
-            return true;
-        }
-
-        echo "\nremovendo PK antiga da tabela term_relation";
-        $conn->executeQuery("ALTER TABLE ONLY term_relation
-                                DROP CONSTRAINT term_relation_pk;");
-
-        echo "\nadicionando coluna id na tabela term_relation";
-        $conn->executeQuery("ALTER TABLE term_relation ADD COLUMN id SERIAL;");
-
-        echo "\ncriando nova PK na tabela term_relation";
-        $conn->executeQuery("ALTER TABLE ONLY term_relation
-                                ADD CONSTRAINT term_relation_pk PRIMARY KEY (id);");
-
-        echo "\ncriando indice owne_index na tabela term_relation";
-        $conn->executeQuery("CREATE INDEX owner_index ON term_relation USING btree (object_type, object_id)");
-
-    },
-
-    'create file and term indexes' => function () use($conn){
-        echo "\n'CREATE UNIQUE INDEX taxonomy_term_unique ON term USING btree (taxonomy, term)'";
-        $conn->executeQuery('CREATE UNIQUE INDEX taxonomy_term_unique ON term USING btree (taxonomy, term)');
-
-        echo "\nCREATE INDEX file_owner_grp_index ON file USING btree (object_type, object_id, grp)";
-        $conn->executeQuery('CREATE INDEX file_owner_grp_index ON file USING btree (object_type, object_id, grp)');
-    },
-
-    'alter metadata table add column id' => function() use($conn) {
-
-        foreach(['agent', 'event', 'space', 'project', 'registration'] as $entity){
-            $table = $entity . "_meta";
-
-            echo "\nremovendo PK antiga da tabela {$table}";
-            if($entity === 'registration'){
-                $conn->executeQuery("ALTER TABLE ONLY {$table}
-                                    DROP CONSTRAINT {$table}_pkey;");
-            }else{
-                $conn->executeQuery("ALTER TABLE ONLY {$table}
-                                    DROP CONSTRAINT {$table}_pk;");
-            }
-
-            echo "\nadicionando coluna id na tabela {$table}";
-            $conn->executeQuery("ALTER TABLE {$table} ADD COLUMN id SERIAL;");
-
-            echo "\ncriando nova PK na tabela {$table}";
-            $conn->executeQuery("ALTER TABLE ONLY {$table}
-                                    ADD CONSTRAINT {$table}_pk PRIMARY KEY (id);");
-
-            echo "\ncriando indice owner_key_index na tabela {$table}";
-            $conn->executeQuery("CREATE INDEX {$table}_owner_key_index ON {$table} USING btree (object_id, key)");
-
-            echo "\ncriando indice owner_key_value_index na tabela {$table}";
-            $conn->executeQuery("CREATE INDEX {$table}_owner_key_value_index ON {$table} USING btree (object_id, key, value)");
-        }
+        
+        $this->disableAccessControl();
     }
-
-);
+];

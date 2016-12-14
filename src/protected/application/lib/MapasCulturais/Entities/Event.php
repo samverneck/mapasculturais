@@ -25,23 +25,12 @@ class Event extends \MapasCulturais\Entity
         Traits\EntityMetaLists,
         Traits\EntityTaxonomies,
         Traits\EntityAgentRelation,
+        Traits\EntitySealRelation,
         Traits\EntityVerifiable,
-        Traits\EntitySoftDelete;
+        Traits\EntitySoftDelete,
+        Traits\EntityDraft,
+        Traits\EntityArchive;
 
-
-
-    protected static $validations = [
-        'name' => [
-            'required' => 'O nome do evento é obrigatório'
-        ],
-        'shortDescription' => [
-            'required' => 'A descrição curta é obrigatória',
-            'v::string()->length(0,400)' => 'A descrição curta deve ter no máximo 400 caracteres'
-        ],
-        'project' => [
-            '$this->validateProject()' => 'Você não pode criar eventos neste projeto.'
-        ]
-    ];
 
     /**
      * @var integer
@@ -127,8 +116,6 @@ class Event extends \MapasCulturais\Entity
      */
     protected $project = null;
 
-    private $_projectChanged = false;
-
     /**
      * @var bool
      *
@@ -151,6 +138,14 @@ class Event extends \MapasCulturais\Entity
     protected $__files;
 
     /**
+     * @var \MapasCulturais\Entities\EventAgentRelation[] Agent Relations
+     *
+     * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\EventAgentRelation", mappedBy="owner", cascade="remove", orphanRemoval=true)
+     * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
+    */
+    protected $__agentRelations;
+
+    /**
      * @var \MapasCulturais\Entities\EventTermRelation[] TermRelation
      *
      * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\EventTermRelation", fetch="LAZY", mappedBy="owner", cascade="remove", orphanRemoval=true)
@@ -158,50 +153,114 @@ class Event extends \MapasCulturais\Entity
     */
     protected $__termRelations;
 
-    protected function canUserCreate($user){
-        $can = $this->_canUser($user, 'create'); // this is a method of Trait\EntityOwnerAgent
 
-        if($can && $this->project){
-            return $this->project->userHasControl($user);
-        }else{
-            return $can;
-        }
+    /**
+     * @var \MapasCulturais\Entities\EventSealRelation[] EventSealRelation
+     *
+     * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\EventSealRelation", fetch="LAZY", mappedBy="owner", cascade="remove", orphanRemoval=true)
+     * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
+    */
+    protected $__sealRelations;
+
+    /**
+     * @var \DateTime
+     *
+     * @ORM\Column(name="update_timestamp", type="datetime", nullable=true)
+     */
+    protected $updateTimestamp;
+
+    private $_newProject = false;
+    
+    public function getEntityTypeLabel($plural = false) {
+        if ($plural)
+            return \MapasCulturais\i::__('Eventos');
+        else
+            return \MapasCulturais\i::__('Evento');
+    }
+    
+    static function getValidations() {
+        return [
+            'name' => [
+                'required' => \MapasCulturais\i::__('O nome do evento é obrigatório')
+            ],
+            'shortDescription' => [
+                'required' => \MapasCulturais\i::__('A descrição curta é obrigatória'),
+                'v::stringType()->length(0,400)' => \MapasCulturais\i::__('A descrição curta deve ter no máximo 400 caracteres')
+            ],
+            'project' => [
+                '$this->validateProject()' => \MapasCulturais\i::__('Você não pode criar eventos neste projeto.')
+            ]
+        ];
+    }
+    
+    function publish($flush = false){
+        $this->checkPermission('publish');
+
+        $app = App::i();
+
+        $app->disableAccessControl();
+
+        $this->status = self::STATUS_ENABLED;
+        $this->save($flush);
+
+        $app->enableAccessControl();
     }
 
-    protected function canUserModify($user){
-        $can = $this->_canUser($user, 'modify'); // this is a method of Trait\EntityOwnerAgent
-        if($this->_projectChanged && $can && $this->project){
-            return $this->project->userHasControl($user);
-        }else{
-            return $can;
-        }
+    public function save($flush = false) {
+        App::i()->hook("entity($this).save:requests", function(){
+            if($this->_newProject !== false){
+                try{
+                    if($this->_newProject){
+                        $this->_newProject->checkPermission('createEvents');
+                    }
+
+                    $this->project = $this->_newProject;
+
+                }catch(\MapasCulturais\Exceptions\PermissionDenied $e){
+                    if(!App::i()->isWorkflowEnabled())
+                        throw $e;
+
+                    $request = new RequestEventProject;
+                    $request->origin = $this;
+                    $request->destination = $this->_newProject;
+                    $this->_newProject = false;
+
+                    throw new \MapasCulturais\Exceptions\WorkflowRequestTransport($request);
+                }
+            }
+        });
+        parent::save($flush);
     }
 
     protected function validateProject(){
-        if($this->project && $this->_projectChanged){
-            return $this->project->canUser('modify');
+        if($this->_newProject){
+            return $this->_newProject->canUser('requestEventRelation');
         }else{
             return true;
         }
     }
 
-    function setProject($project){
-        if($project)
-            $this->setProjectId($project->id);
-        else
-            $this->setProjectId(null);
+    function setProjectId($projectId){
+        if($projectId){
+            $project = App::i()->repo('Project')->find((int)$projectId);
+            $this->setProject($project);
+        }else{
+            $this->setProject(null);
+        }
     }
 
-    function setProjectId($projectId){
-        if(!$projectId){
-            $this->project = null;
-
-        }elseif(!$this->project || $this->project->id != $projectId){
-            $this->_projectChanged = true;
-            $project = App::i()->repo('Project')->find($projectId);
-
-            $this->project = $project;
+    function setProject($project) {
+        if (is_object($this->project)) {
+            if (!$this->project->equals($project)) {
+                $this->_newProject = $project;
+            }
+        } else {
+            $this->_newProject = $project;
         }
+    }
+
+    function getProject(){
+        return $this->_newProject !== false ? $this->_newProject : $this->project;
     }
 
     public function findOccurrencesBySpace(\MapasCulturais\Entities\Space $space, $date_from = null, $date_to = null, $limit = null, $offset = null){
@@ -226,7 +285,7 @@ class Event extends \MapasCulturais\Entity
         $rsm->addFieldResult('e', 'until', '_until');
         $rsm->addFieldResult('e', 'starts_at', '_startsAt');
         $rsm->addFieldResult('e', 'ends_at', '_endsAt');
-        $rsm->addFieldResult('e', 'rule', '_rule');
+        $rsm->addFieldResult('e', 'rule', 'rule');
 
         $dql_limit = $dql_offset = '';
 
@@ -328,6 +387,55 @@ class Event extends \MapasCulturais\Entity
         $result = $query->getResult();
 
         return $result ? $result : [];
+    }
+
+    protected function canUserCreate($user){
+        $can = $this->_canUser($user, 'create'); // this is a method of Trait\EntityOwnerAgent
+
+        if($can && $this->project){
+            return $this->project->userHasControl($user);
+        }else{
+            return $can;
+        }
+    }
+
+    protected function canUserModify($user){
+        $can = $this->_canUser($user, 'modify'); // this is a method of Trait\EntityOwnerAgent
+        if($this->_projectChanged && $can && $this->project){
+            return $this->project->userHasControl($user);
+        }else{
+            return $can;
+        }
+    }
+
+    protected function canUserPublish($user){
+        if($user->is('guest')){
+            return false;
+        }
+
+        if($user->is('admin')){
+            return true;
+        }
+
+        if($this->canUser('@control', $user)){
+            return true;
+        }
+
+        if($this->project && $this->project->canUser('@control', $user)){
+            return true;
+        }
+
+        return false;
+    }
+
+    protected function canUserView($user){
+        if($this->status === self::STATUS_ENABLED){
+            return true;
+        }else if($this->status === self::STATUS_DRAFT){
+            return $this->canUser('@control', $user) || ($this->project && $this->project->canUser('@control', $user));
+        }
+
+        return false;
     }
 
     //============================================================= //

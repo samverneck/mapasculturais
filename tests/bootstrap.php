@@ -26,6 +26,8 @@ define('PROTECTED_PATH', BASE_PATH . 'protected/');
 define('APPLICATION_PATH', PROTECTED_PATH . 'application/');
 define('THEMES_PATH', APPLICATION_PATH . 'themes/');
 define('ACTIVE_THEME_PATH',  THEMES_PATH . 'active/');
+define('PLUGINS_PATH', APPLICATION_PATH.'/plugins/');
+define('LANGUAGES_PATH', APPLICATION_PATH . 'translations/');
 
  // Prepare a mock environment
 \Slim\Environment::mock(array_merge(array(
@@ -74,7 +76,12 @@ abstract class MapasCulturais_TestCase extends PHPUnit_Framework_TestCase
         }
     }
 
-
+    /**
+     * 
+     * @param string $class
+     * @param mixed $user
+     * @return \MapasCulturais\Entity
+     */
     function getNewEntity($class, $user = null){
         if(!is_null($user)){
             $_user = $this->app->user->is('guest') ? null : $this->app->user;
@@ -84,7 +91,8 @@ abstract class MapasCulturais_TestCase extends PHPUnit_Framework_TestCase
         $app = MapasCulturais\App::i();
         $classname = 'MapasCulturais\Entities\\' . $class;
 
-        $type = array_shift($app->getRegisteredEntityTypes($classname));
+        $_types = $app->getRegisteredEntityTypes($classname);
+        $type = array_shift($_types);
 
         $entity = new $classname;
         $entity->name = "Test $class "  . uniqid();
@@ -135,7 +143,7 @@ abstract class MapasCulturais_TestCase extends PHPUnit_Framework_TestCase
         if(is_object($exception) && substr(get_class($exception),0,9) === 'Doctrine\\'){
             throw $exception;
         }
-            
+
         $this->assertInstanceOf('MapasCulturais\Exceptions\WorkflowRequest', $exception, $msg);
     }
 
@@ -191,10 +199,10 @@ abstract class MapasCulturais_TestCase extends PHPUnit_Framework_TestCase
         }else{
             $url = $path;
         }
-        
+
         $c = new Curl;
         $c->$method($url, $options);
-        
+
         return $c;
     }
 

@@ -28,30 +28,17 @@ class Agent extends \MapasCulturais\Entity
         Traits\EntityGeoLocation,
         Traits\EntityTaxonomies,
         Traits\EntityAgentRelation,
+        Traits\EntitySealRelation,
         Traits\EntityVerifiable,
         Traits\EntitySoftDelete,
+        Traits\EntityDraft,
+        Traits\EntityArchive,
         Traits\EntityNested {
             Traits\EntityNested::setParent as nestedSetParent;
         }
 
     const STATUS_RELATED = -1;
     const STATUS_INVITED = -2;
-
-    protected static $validations = [
-        'name' => [
-            'required' => 'O nome do agente é obrigatório'
-        ],
-        'shortDescription' => [
-            'required' => 'A descrição curta é obrigatória',
-            'v::string()->length(0,400)' => 'A descrição curta deve ter no máximo 400 caracteres'
-        ],
-        'type' => [
-            'required' => 'O tipo do agente é obrigatório',
-        ],
-        'location' => [
-            '$this->validateLocation()' => 'A localização geográfica do agente é obrigatória',
-        ]
-    ];
 
     protected function validateLocation(){
         if($this->location instanceof \MapasCulturais\Types\GeoPoint && $this->location != '(0,0)'){
@@ -211,12 +198,36 @@ class Agent extends \MapasCulturais\Entity
     protected $__files;
 
     /**
+     * @var \MapasCulturais\Entities\AgentAgentRelation[] Agent Relations
+     *
+     * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\AgentAgentRelation", mappedBy="owner", cascade="remove", orphanRemoval=true)
+     * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
+    */
+    protected $__agentRelations;
+
+    /**
      * @var \MapasCulturais\Entities\AgentTermRelation[] TermRelation
      *
      * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\AgentTermRelation", fetch="LAZY", mappedBy="owner", cascade="remove", orphanRemoval=true)
      * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
     */
     protected $__termRelations;
+
+
+    /**
+     * @var \MapasCulturais\Entities\AgentSealRelation[] AgentSealRelation
+     *
+     * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\AgentSealRelation", fetch="LAZY", mappedBy="owner", cascade="remove", orphanRemoval=true)
+     * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
+    */
+    protected $__sealRelations;
+
+    /**
+     * @var \DateTime
+     *
+     * @ORM\Column(name="update_timestamp", type="datetime", nullable=true)
+     */
+    protected $updateTimestamp;
 
 
     /**
@@ -228,7 +239,29 @@ class Agent extends \MapasCulturais\Entity
 
         parent::__construct();
     }
-
+    
+    public function getEntityTypeLabel($plural = false) {
+        if ($plural)
+            return \MapasCulturais\i::__('Agentes');
+        else
+            return \MapasCulturais\i::__('Agente');
+    }
+    
+    static function getValidations() {
+        return [
+            'name' => [
+                'required' => \MapasCulturais\i::__('O nome do agente é obrigatório')
+            ],
+            'shortDescription' => [
+                'required' => \MapasCulturais\i::__('A descrição curta é obrigatória'),
+                'v::stringType()->length(0,400)' => \MapasCulturais\i::__('A descrição curta deve ter no máximo 400 caracteres')
+            ],
+            'type' => [
+                'required' => \MapasCulturais\i::__('O tipo do agente é obrigatório'),
+            ]
+        ];
+    }
+    
     function setAsUserProfile(){
         $this->checkPermission('setAsUserProfile');
 
@@ -237,20 +270,26 @@ class Agent extends \MapasCulturais\Entity
         $this->user->save(true);
     }
 
+    function setParentAsNull($flush = true){
+        $this->parent = null;
+
+        $this->save($flush);
+    }
+
     function getIsUserProfile(){
         return $this->equals($this->user->profile);
     }
 
     function getProjects(){
-        return $this->fetchByStatus($this->_projects, self::STATUS_ENABLED);
+        return $this->fetchByStatus($this->_projects, self::STATUS_ENABLED, ['name' => 'ASC']);
     }
 
     function getEvents(){
-        return $this->fetchByStatus($this->_events, self::STATUS_ENABLED);
+        return $this->fetchByStatus($this->_events, self::STATUS_ENABLED, ['name' => 'ASC']);
     }
 
     function getSpaces(){
-        return $this->fetchByStatus($this->_spaces, self::STATUS_ENABLED);
+        return $this->fetchByStatus($this->_spaces, self::STATUS_ENABLED, ['name' => 'ASC']);
     }
 
 
@@ -375,6 +414,14 @@ class Agent extends \MapasCulturais\Entity
             return true;
 
         return $this->getOwner()->canUser('modify') && $this->canUser('modify');
+    }
+
+
+    /** @ORM\PrePersist */
+    public function __setParent($args = null){
+        if($this->equals($this->ownerUser->profile)){
+            $this->parent = null;
+        }
     }
 
     //============================================================= //

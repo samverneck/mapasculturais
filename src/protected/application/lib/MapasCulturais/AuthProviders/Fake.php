@@ -9,7 +9,28 @@ class Fake extends \MapasCulturais\AuthProvider{
 
         // add actions to auth controller
         $app->hook('GET(auth.index)', function () use($app){
-            $users = $app->repo('User')->findBy([], ['id' => 'ASC']);
+            $rsm = new \Doctrine\ORM\Query\ResultSetMapping();
+            // build rsm here
+
+            $query = $app->em->createNativeQuery('
+                SELECT 
+                    u.id, 
+                    u.email, 
+                    a.name AS profile,
+                    r.name AS roles
+                FROM 
+                    usr u
+                    LEFT JOIN agent a ON a.id = u.profile_id
+                    LEFT JOIN role r ON r.usr_id = u.id
+                    
+                ORDER BY profile', $rsm);
+            
+            $rsm->addScalarResult('id', 'id', 'string');
+            $rsm->addScalarResult('email', 'email', 'string');
+            $rsm->addScalarResult('profile', 'profile', 'string');
+            $rsm->addScalarResult('roles', 'roles', 'string');
+            $users = $query->getScalarResult();
+            
             $this->render('fake-authentication', [
                 'users' => $users, 
                 'form_action' => $app->createUrl('auth', 'fakeLogin'),
@@ -28,7 +49,7 @@ class Fake extends \MapasCulturais\AuthProvider{
         });
         
         $app->hook('POST(user.index)', function() use($app){
-            $new_user = $app->auth->_createUser($this->postData);
+            $new_user = $app->auth->createUser($this->postData);
             $app->redirect($app->createUrl('auth', 'fakeLogin') .'?fake_authentication_user_id='.$new_user->id);
         });
     }
@@ -89,6 +110,7 @@ class Fake extends \MapasCulturais\AuthProvider{
 
         $a = new \MapasCulturais\Entities\Agent($u);
         $a->name = $data['name'];
+        $a->status = 0;
 
         $app->em->persist($a);
         $app->em->flush();

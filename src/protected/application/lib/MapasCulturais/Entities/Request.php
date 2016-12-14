@@ -24,7 +24,8 @@ use MapasCulturais\App;
         "EventOccurrence"   = "\MapasCulturais\Entities\RequestEventOccurrence",
         "EventProject"      = "\MapasCulturais\Entities\RequestEventProject",
         "ChildEntity"       = "\MapasCulturais\Entities\RequestChildEntity",
-        "AgentRelation"     = "\MapasCulturais\Entities\RequestAgentRelation"
+        "AgentRelation"     = "\MapasCulturais\Entities\RequestAgentRelation",
+        "SealRelation"      = "\MapasCulturais\Entities\RequestSealRelation"
    })
  * @ORM\HasLifecycleCallbacks
  */
@@ -201,7 +202,7 @@ abstract class Request extends \MapasCulturais\Entity{
         $app->enableAccessControl();
 
         $app->applyHookBoundTo($this, 'workflow(' . $this->getHookClassPath() . ').reject:after');
-        
+
         $app->disableAccessControl();
         $this->delete(true);
         $app->enableAccessControl();
@@ -243,15 +244,14 @@ abstract class Request extends \MapasCulturais\Entity{
     }
 
     function save($flush = false) {
-        $this->requestUid = $this->generateUid();
-        
-        $request = $this->repo()->findOneBy(['requestUid' => $this->requestUid]);
-        
+        $request = $this->repo()->findOneBy(['requestUid' => $this->generateUid()]);
+
         if($request && !$request->equals($this)){
             $request->_applyPostPersistHooks();
         }else{
             // if the origin is a new entity, reset the origin
             $this->setOrigin($this->getOrigin());
+            $this->requestUid = $this->generateUid();
             parent::save($flush);
         }
     }

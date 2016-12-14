@@ -34,9 +34,35 @@ class Theme extends BaseV1\Theme{
             $page = $this->data[0];
             $app->view->bodyClasses[] = "page-" . $page;
         });
+
+        $app->hook('view.partial(<<*>>widget-areas):after', function($part, &$html) use($app){
+
+            if($this->controller->id !== 'agent' || $this->controller->action === 'create'){
+                return;
+            }
+            $html = '
+                <div class="widget">
+                    <h3>Código do Agente</h3>
+                    <div class="agent-code">' . $this->controller->requestedEntity->id . '</div>
+                </div>' . $html;
+        });
+
     }
 
     static function getThemeFolder() {
         return __DIR__;
+    }
+
+    public function addDocumentMetas() {
+        parent::addDocumentMetas();
+        if(in_array($this->controller->action, ['single', 'edit'])){
+            return;
+        }
+        $app = App::i();
+        foreach ($this->documentMeta as $key => $meta){
+            if(isset($meta['property']) && ($meta['property'] === 'og:image' || $meta['property'] === 'og:image:url')){
+                $this->documentMeta[$key] = array('property' => $meta['property'] , 'content' => $app->view->asset('img/share-sj.png', false));
+            }
+        }
     }
 }

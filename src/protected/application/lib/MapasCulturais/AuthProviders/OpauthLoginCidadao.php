@@ -6,29 +6,37 @@ use MapasCulturais\Entities;
 
 class OpauthLoginCidadao extends \MapasCulturais\AuthProvider{
     protected $opauth;
+
+    protected $_firstLloginUrl = null;
+
     protected function _init() {
         $app = App::i();
+
+        $url = $app->createUrl('auth');
         $config = array_merge([
             'timeout' => '24 hours',
             'salt' => 'LT_SECURITY_SALT_SECURITY_SALT_SECURITY_SALT_SECURITY_SALT_SECU',
 
             'client_secret' => '',
             'cliente_id' => '',
-            'path' => preg_replace('#^https?\:\/\/[^\/]*(/.*)#', '$1', $app->createUrl('auth'))
+            'path' => preg_replace('#^https?\:\/\/[^\/]*(/.*)#', '$1', $url)
         ], $this->_config);
         $opauth_config = [
             'strategy_dir' => PROTECTED_PATH . '/vendor/opauth/',
             'Strategy' => [
-                'logincidadao' => [
-                    'client_id' => $config['client_id'],
-                    'client_secret' => $config['client_secret']
-                ]
+                'logincidadao' => $config
             ],
             'security_salt' => $config['salt'],
             'security_timeout' => $config['timeout'],
+            'host' => preg_replace('#^(https?\:\/\/[^\/]*)/.*#', '$1', $url),
             'path' => $config['path'],
             'callback_url' => $app->createUrl('auth','response')
         ];
+
+        if(isset($config['onCreateRedirectUrl'])){
+            $this->onCreateRedirectUrl = $config['onCreateRedirectUrl'];
+        }
+
         $opauth = new \Opauth($opauth_config, false );
         $this->opauth = $opauth;
 
@@ -56,7 +64,7 @@ class OpauthLoginCidadao extends \MapasCulturais\AuthProvider{
     public function _requireAuthentication() {
         $app = App::i();
         if($app->request->isAjax()){
-            $app->halt(401, $app->txt('This action requires authentication'));
+            $app->halt(401, \MapasCulturais\i::__('This action requires authentication'));
         }else{
             $this->_setRedirectPath($app->request->getPathInfo());
             $app->redirect($app->controller('auth')->createUrl(''), 401);
@@ -145,7 +153,7 @@ class OpauthLoginCidadao extends \MapasCulturais\AuthProvider{
             $response = $this->_getResponse();
             $auth_uid = $response['auth']['uid'];
             $auth_provider = $app->getRegisteredAuthProviderId('logincidadao');
-            
+
             $user = $app->repo('User')->getByAuth($auth_provider, $auth_uid);
             return $user;
         }else{
@@ -163,10 +171,10 @@ class OpauthLoginCidadao extends \MapasCulturais\AuthProvider{
             $user = $this->_getAuthenticatedUser();
             if(!$user){
                 $response = $this->_getResponse();
-                $user = $this->_createUser($response);
-                
+                $user = $this->createUser($response);
+
                 $profile = $user->profile;
-                $this->_setRedirectPath($profile->editUrl);
+                $this->_setRedirectPath($this->onCreateRedirectUrl ? $this->onCreateRedirectUrl : $profile->editUrl);
             }
             $this->_setAuthenticatedUser($user);
             App::i()->applyHook('auth.successful');
@@ -193,14 +201,16 @@ class OpauthLoginCidadao extends \MapasCulturais\AuthProvider{
         // cria um agente do tipo user profile para o usuário criado acima
         $agent = new Entities\Agent($user);
 
+        $agent->status = 0;
+
         if(isset($response['auth']['raw']['first_name']) && isset($response['auth']['raw']['surname'])){
             $agent->name = $response['auth']['raw']['first_name'] . ' ' . $response['auth']['raw']['surname'];
         }else if(isset($response['auth']['raw']['first_name'])){
             $agent->name = $response['auth']['raw']['first_name'];
         }else{
-            $agent->name = 'Sem Nome';
+            $agent->name = '';
         }
-        
+
         $agent->emailPrivado = $user->email;
 
         $app->em->persist($agent);
@@ -211,8 +221,8 @@ class OpauthLoginCidadao extends \MapasCulturais\AuthProvider{
 
         $app->enableAccessControl();
 
-        $this->_setRedirectPath($agent->editUrl);
-        
+        $this->_setRedirectPath($this->onCreateRedirectUrl ? $this->onCreateRedirectUrl : $agent->editUrl);
+
         return $user;
     }
 }

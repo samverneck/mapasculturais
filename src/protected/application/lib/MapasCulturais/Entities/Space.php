@@ -25,29 +25,13 @@ class Space extends \MapasCulturais\Entity
         Traits\EntityGeoLocation,
         Traits\EntityTaxonomies,
         Traits\EntityAgentRelation,
+        Traits\EntitySealRelation,
         Traits\EntityNested,
         Traits\EntityVerifiable,
-        Traits\EntitySoftDelete;
+        Traits\EntitySoftDelete,
+        Traits\EntityDraft,
+        Traits\EntityArchive;
 
-
-    protected static $validations = [
-        'name' => [
-            'required' => 'O nome do espaço é obrigatório',
-            'unique' => 'Já existe um espaço com este nome'
-        ],
-        'shortDescription' => [
-            'required' => 'A descrição curta é obrigatória',
-            'v::string()->length(0,400)' => 'A descrição curta deve ter no máximo 400 caracteres'
-        ],
-        'type' => [
-            'required' => 'O tipo do espaço é obrigatório',
-        ],
-        'location' => [
-            'required' => 'A localização do espaço no mapa é obrigatória',
-            //'v::allOf(v::key("x", v::numeric()->between(-90,90)),v::key("y", v::numeric()->between(-180,180)))' => 'The space location is not valid'
-        ]
-        //@TODO add validation to property type
-    ];
 
     //
 
@@ -188,6 +172,14 @@ class Space extends \MapasCulturais\Entity
     protected $__files;
 
     /**
+     * @var \MapasCulturais\Entities\SpaceAgentRelation[] Agent Relations
+     *
+     * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\SpaceAgentRelation", mappedBy="owner", cascade="remove", orphanRemoval=true)
+     * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
+    */
+    protected $__agentRelations;
+
+    /**
      * @var \MapasCulturais\Entities\SpaceTermRelation[] TermRelation
      *
      * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\SpaceTermRelation", fetch="LAZY", mappedBy="owner", cascade="remove", orphanRemoval=true)
@@ -195,12 +187,53 @@ class Space extends \MapasCulturais\Entity
     */
     protected $__termRelations;
 
+
+    /**
+     * @var \MapasCulturais\Entities\SpaceSealRelation[] SpaceSealRelation
+     *
+     * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\SpaceSealRelation", fetch="LAZY", mappedBy="owner", cascade="remove", orphanRemoval=true)
+     * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
+    */
+    protected $__sealRelations;
+
+    /**
+     * @var \DateTime
+     *
+     * @ORM\Column(name="update_timestamp", type="datetime", nullable=true)
+     */
+    protected $updateTimestamp;
+
     public function __construct() {
         $this->children = new \Doctrine\Common\Collections\ArrayCollection();
         $this->owner = App::i()->user->profile;
         parent::__construct();
     }
-
+    
+    public function getEntityTypeLabel($plural = false) {
+        if ($plural)
+            return \MapasCulturais\i::__('Espaços');
+        else
+            return \MapasCulturais\i::__('Espaço');
+    }
+    
+    static function getValidations() {
+        return [
+            'name' => [
+                'required' => \MapasCulturais\i::__('O nome do espaço é obrigatório')
+            ],
+            'shortDescription' => [
+                'required' => \MapasCulturais\i::__('A descrição curta é obrigatória'),
+                'v::stringType()->length(0,400)' => \MapasCulturais\i::__('A descrição curta deve ter no máximo 400 caracteres')
+            ],
+            'type' => [
+                'required' => \MapasCulturais\i::__('O tipo do espaço é obrigatório'),
+            ]
+        ];
+    }
+    
+    
+    
+    
     //============================================================= //
     // The following lines ara used by MapasCulturais hook system.
     // Please do not change them.

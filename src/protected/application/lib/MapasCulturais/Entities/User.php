@@ -4,8 +4,6 @@ namespace MapasCulturais\Entities;
 
 use Doctrine\ORM\Mapping as ORM;
 use MapasCulturais\App;
-use Doctrine\Common\Collections\Criteria;
-
 
 /**
  * User
@@ -14,6 +12,7 @@ use Doctrine\Common\Collections\Criteria;
  * @property-read \MapasCulturais\Entities\Space[] $spaces Active Spaces
  * @property-read \MapasCulturais\Entities\Project[] $projects Active Projects
  * @property-read \MapasCulturais\Entities\Event[] $events Active Events
+ * @property-read \MapasCulturais\Entities\Seal[] $seals Active Seals
  *
  * @property-read \MapasCulturais\Entities\Agent $profile User Profile Agent
  *
@@ -22,9 +21,10 @@ use Doctrine\Common\Collections\Criteria;
  * @ORM\entity(repositoryClass="MapasCulturais\Repositories\User")
  * @ORM\HasLifecycleCallbacks
  */
-class User extends \MapasCulturais\Entity
-{
+class User extends \MapasCulturais\Entity implements \MapasCulturais\UserInterface{
     const STATUS_ENABLED = 1;
+
+    use \MapasCulturais\Traits\EntityMetadata;
 
 
     /**
@@ -85,7 +85,7 @@ class User extends \MapasCulturais\Entity
      * @var \MapasCulturais\Entities\Role[] User Roles
      * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\Role", mappedBy="user", cascade="remove", orphanRemoval=true, fetch="EAGER")
      */
-    protected $roles = [];
+    protected $roles;
 
     /**
      * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\Agent", mappedBy="user", cascade="remove", orphanRemoval=true, fetch="EAGER")
@@ -103,12 +103,24 @@ class User extends \MapasCulturais\Entity
      */
     protected $profile;
 
+    /**
+    * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\UserMeta", mappedBy="owner", cascade={"remove","persist"}, orphanRemoval=true)
+    */
+    protected $__metadata;
+
 
     public function __construct() {
         parent::__construct();
 
         $this->agents = new \Doctrine\Common\Collections\ArrayCollection();
         $this->lastLoginTimestamp = new \DateTime;
+    }
+    
+    public function getEntityTypeLabel($plural = false) {
+        if ($plural)
+            return \MapasCulturais\i::__('Usuários');
+        else
+            return \MapasCulturais\i::__('Usuário');
     }
 
     function getOwnerUser(){
@@ -126,6 +138,8 @@ class User extends \MapasCulturais\Entity
             throw new \Exception ('error');
 
         $this->profile = $agent;
+
+        $agent->setParentAsNull(true);
     }
 
     function jsonSerialize() {
@@ -166,6 +180,10 @@ class User extends \MapasCulturais\Entity
         }
 
         return false;
+    }
+
+    function can($action, \MapasCulturais\Entity $entity){
+        return $entity->canUser($action, $this);
     }
 
     protected function canUserAddRole($user){
@@ -209,20 +227,38 @@ class User extends \MapasCulturais\Entity
     }
 
     protected function _getEntitiesByStatus($entityClassName, $status = 0, $status_operator = '>'){
-        $dql = "
-            SELECT
-                e
-            FROM
-                $entityClassName e
-                JOIN e.owner a
-            WHERE
-                e.status $status_operator :status AND
-                a.user = :user
-            ORDER BY
-                e.createTimestamp ASC
-        ";
-        $query = App::i()->em->createQuery($dql);
+    	if ($entityClassName::usesTaxonomies()) {
+    		$dql = "
+	    		SELECT
+	    			e, m, tr
+	    		FROM
+	    			$entityClassName e
+	    			JOIN e.owner a
+	    			LEFT JOIN e.__metadata m
+	    			LEFT JOIN e.__termRelations tr
+	    		WHERE
+	    			e.status $status_operator :status AND
+	    			a.user = :user
+	    		ORDER BY
+	    			e.name,
+	    			e.createTimestamp ASC ";
+    	} else {
+    		$dql = "
+    			SELECT
+   		 			e, m
+    			FROM
+    				$entityClassName e
+		    		JOIN e.owner a
+		    		LEFT JOIN e.__metadata m
+	    		WHERE
+		    		e.status $status_operator :status AND
+		    		a.user = :user
+	    		ORDER BY
+		    		e.name,
+		    		e.createTimestamp ASC ";
+    	}
 
+		$query = App::i()->em->createQuery($dql);
         $query->setParameter('user', $this);
         $query->setParameter('status', $status);
 
@@ -231,23 +267,55 @@ class User extends \MapasCulturais\Entity
     }
 
     private function _getAgentsByStatus($status){
-        return App::i()->repo('Agent')->findBy(['user' => $this, 'status' => $status]);
+        return App::i()->repo('Agent')->findBy(['user' => $this, 'status' => $status], ['name' => "ASC"]);
     }
 
     function getEnabledAgents(){
         return $this->_getAgentsByStatus(Agent::STATUS_ENABLED);
     }
+    function getDraftAgents(){
+        $this->checkPermission('modify');
+
+        return $this->_getAgentsByStatus(Agent::STATUS_DRAFT);
+    }
     function getTrashedAgents(){
+        $this->checkPermission('modify');
+
         return $this->_getAgentsByStatus(Agent::STATUS_TRASH);
     }
     function getDisabledAgents(){
+        $this->checkPermission('modify');
+
         return $this->_getAgentsByStatus(Agent::STATUS_DISABLED);
     }
     function getInvitedAgents(){
+        $this->checkPermission('modify');
+
         return $this->_getAgentsByStatus(Agent::STATUS_INVITED);
     }
     function getRelatedAgents(){
+        $this->checkPermission('modify');
+
         return $this->_getAgentsByStatus(Agent::STATUS_RELATED);
+    }
+
+    function getArchivedAgents(){
+        $this->checkPermission('modify');
+
+        return $this->_getAgentsByStatus( Agent::STATUS_ARCHIVED);
+    }
+
+    function getHasControlAgents(){
+        $this->checkPermission('modify');
+
+        return App::i()->repo('Agent')->findByAgentRelationUser($this, true);
+    }
+
+    function getAgentWithControl() {
+        $this->checkPermission('modify');
+        $app = App::i();
+        $entity = $app->view->controller->id;
+        return $app->repo($entity)->findByAgentWithEntityControl();
     }
 
     public function getSpaces(){
@@ -256,13 +324,31 @@ class User extends \MapasCulturais\Entity
     function getEnabledSpaces(){
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Space', Space::STATUS_ENABLED, '=');
     }
+    function getDraftSpaces(){
+        $this->checkPermission('modify');
+
+        return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Space', Space::STATUS_DRAFT, '=');
+    }
     function getTrashedSpaces(){
+        $this->checkPermission('modify');
+
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Space', Space::STATUS_TRASH, '=');
     }
     function getDisabledSpaces(){
+        $this->checkPermission('modify');
+
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Space', Space::STATUS_DISABLED, '=');
     }
 
+    function getArchivedSpaces(){
+        $this->checkPermission('modify');
+        return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Space', Space::STATUS_ARCHIVED,'=');
+    }
+
+    function getHasControlSpaces(){
+        $this->checkPermission('modify');
+        return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Space', Space::STATUS_ARCHIVED,'=');
+    }
 
     public function getEvents(){
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Event');
@@ -270,13 +356,32 @@ class User extends \MapasCulturais\Entity
     function getEnabledEvents(){
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Event', Event::STATUS_ENABLED, '=');
     }
+    function getDraftEvents(){
+        $this->checkPermission('modify');
+
+        return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Event', Event::STATUS_DRAFT, '=');
+    }
     function getTrashedEvents(){
+        $this->checkPermission('modify');
+
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Event', Event::STATUS_TRASH, '=');
     }
     function getDisabledEvents(){
+        $this->checkPermission('modify');
+
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Event', Event::STATUS_DISABLED, '=');
     }
+    function getHasControlEvents(){
+        $this->checkPermission('modify');
 
+        return App::i()->repo('Event')->findByAgentRelationUser($this, true);
+    }
+
+    function getArchivedEvents(){
+        $this->checkPermission('modify');
+
+        return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Event', Event::STATUS_ARCHIVED,'=');
+    }
 
     public function getProjects(){
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Project');
@@ -284,14 +389,72 @@ class User extends \MapasCulturais\Entity
     function getEnabledProjects(){
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Project', Project::STATUS_ENABLED, '=');
     }
+    function getDraftProjects(){
+        $this->checkPermission('modify');
+
+        return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Project', Project::STATUS_DRAFT, '=');
+    }
     function getTrashedProjects(){
+        $this->checkPermission('modify');
+
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Project', Project::STATUS_TRASH, '=');
     }
     function getDisabledProjects(){
+        $this->checkPermission('modify');
+
         return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Project', Project::STATUS_DISABLED, '=');
     }
 
+    function getArchivedProjects(){
+        $this->checkPermission('modify');
+
+        return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Project', Project::STATUS_ARCHIVED,'=');
+    }
+
+    function getHasControlProjects(){
+        $this->checkPermission('modify');
+
+        return App::i()->repo('Project')->findByAgentRelationUser($this, true);
+    }
+
+    public function getSeals(){
+    	return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Seal');
+    }
+    function getEnabledSeals(){
+    	return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Seal', Seal::STATUS_ENABLED, '=');
+    }
+    function getDraftSeals(){
+    	$this->checkPermission('modify');
+
+    	return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Seal', Seal::STATUS_DRAFT, '=');
+    }
+    function getTrashedSeals(){
+    	$this->checkPermission('modify');
+
+    	return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Seal', Seal::STATUS_TRASH, '=');
+    }
+    function getDisabledSeals(){
+    	$this->checkPermission('modify');
+
+    	return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Seal', Seal::STATUS_DISABLED, '=');
+    }
+
+    function getArchivedSeals(){
+        $this->checkPermission('modify');
+
+        return $this->_getEntitiesByStatus(__NAMESPACE__ . '\Seal', Seal::STATUS_ARCHIVED,'=');
+    }
+    
+    function getHasControlSeals(){
+        $this->checkPermission('modify');
+
+        return App::i()->repo('Seal')->findByAgentRelationUser($this, true);
+    }
+
     function getNotifications($status = null){
+        $app = App::i();
+        $app->em->clear('MapasCulturais\Entities\Notification');
+
         if(is_null($status)){
             $status_operator =  '>';
             $status = '0';
@@ -308,7 +471,7 @@ class User extends \MapasCulturais\Entity
                 e.status $status_operator :status AND
                 e.user = :user
             ORDER BY
-                e.createTimestamp ASC
+                e.createTimestamp DESC
         ";
         $query = App::i()->em->createQuery($dql);
 
@@ -318,6 +481,74 @@ class User extends \MapasCulturais\Entity
         $entityList = $query->getResult();
         return $entityList;
 
+    }
+
+    function getEntitiesNotifications($app) {
+      if(in_array('notifications',$app->config['plugins.enabled']) && $app->config['notifications.user.access'] > 0) {
+        $now = new \DateTime;
+        $interval = date_diff($app->user->lastLoginTimestamp, $now);
+        if($interval->format('%a') >= $app->config['notifications.user.access']) {
+          // message to user about last access system
+          $notification = new Notification;
+          $notification->user = $app->user;
+          $notification->message = "Seu último acesso foi em <b>" . $app->user->lastLoginTimestamp->format('d/m/Y') . "</b>, atualize suas informações se necessário.";
+          $notification->save();
+        }
+      }
+
+      if(in_array('notifications',$app->config['plugins.enabled']) && $app->config['notifications.entities.update'] > 0) {
+          $now = new \DateTime;
+          foreach($this->agents as $agent) {
+            $lastUpdateDate = $agent->updateTimestamp ? $agent->updateTimestamp: $agent->createTimestamp;
+            $interval = date_diff($lastUpdateDate, $now);
+            if($agent->status > 0 && !$agent->sentNotification && $interval->format('%a') >= $app->config['notifications.entities.update']) {
+              // message to user about old agent registrations
+              $notification = new Notification;
+              $notification->user = $app->user;
+              $notification->message = "O agente <b>" . $agent->name . "</b> não é atualizado desde de <b>" . $lastUpdateDate->format("d/m/Y") . "</b>, atualize as informações se necessário.";
+              $notification->message .= '<a class="btn btn-small btn-primary" href="' . $agent->editUrl . '">editar</a>';
+              $notification->save();
+
+              // use the notification id to use it later on entity update
+              $agent->sentNotification = $notification->id;
+              $agent->save();
+            }
+          }
+
+          foreach($this->spaces as $space) {
+            $lastUpdateDate = $space->updateTimestamp ? $space->updateTimestamp: $space->createTimestamp;
+            $interval = date_diff($lastUpdateDate, $now);
+
+            if($space->status > 0 && !$space->sentNotification && $interval->format('%a') >= $app->config['notifications.entities.update']) {
+              // message to user about old space registrations
+              $notification = new Notification;
+              $notification->user = $app->user;
+              $notification->message = "O Espaço <b>" . $space->name . "</b> não é atualizado desde de <b>" . $lastUpdateDate->format("d/m/Y") . "</b>, atualize as informações se necessário.";
+              $notification->message .= '<a class="btn btn-small btn-primary" href="' . $space->editUrl . '">editar</a>';
+              $notification->save();
+              // use the notification id to use it later on entity update
+              $space->sentNotification = $notification->id;
+              $space->save();
+            }
+          }
+
+          /* @TODO: verificar se faz sentido */
+
+//          foreach($this->seals as $seal) {
+//            $lastUpdateDate = $seal->updateTimestamp ? $seal->updateTimestamp: $seal->createTimestamp;
+//            $interval = date_diff($lastUpdateDate, $now);
+//            if($seal->status > 0 && $interval->format('%a') >= $app->config['notifications.entities.update']) {
+//              // message to user about old seal registrations
+//              $notification = new Notification;
+//              $notification->user = $app->user;
+//              $notification->message = "O selo <b>" . $seal->name . "</b> não é atualizado desde de <b>" . $lastUpdateDate->format("d/m/Y") . "</b>, atualize as informações se necessário.";
+//              $notification->message .= '<a class="btn btn-small btn-primary" href="' . $seal->editUrl . '">editar</a>';
+//              $notification->save();
+//            }
+//          }
+
+        $app->em->flush();
+      }
     }
 
     //============================================================= //

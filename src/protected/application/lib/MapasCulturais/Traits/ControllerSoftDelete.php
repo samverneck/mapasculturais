@@ -8,8 +8,6 @@ trait ControllerSoftDelete{
         $this->requireAuthentication();
 
         $app = App::i();
-        if(!key_exists('id', $this->urlData))
-            $app->pass();
 
         $entity = $this->requestedEntity;
 
@@ -25,20 +23,19 @@ trait ControllerSoftDelete{
             $app->redirect($app->request()->getReferer());
         }
     }
-    
+
     function GET_destroy(){
         $this->requireAuthentication();
 
         $app = App::i();
-        if(!key_exists('id', $this->urlData))
-            $app->pass();
 
         $entity = $this->requestedEntity;
+
         $urls = [$entity->singleUrl, $entity->editUrl];
 
         if(!$entity)
             $app->pass();
-        
+
         $entity->destroy(true);
 
         if($this->isAjax()){
@@ -47,7 +44,7 @@ trait ControllerSoftDelete{
             //e redireciona de volta para o referer
             if(in_array($app->request()->getReferer(), $urls))
                 $app->redirect($app->createUrl('panel'));
-            else    
+            else
                 $app->redirect($app->request()->getReferer());
         }
 

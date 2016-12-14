@@ -1,7 +1,6 @@
 <?php
 namespace MapasCulturais\Traits;
 
-use Doctrine\Common\Collections\Criteria;
 use MapasCulturais\App;
 use MapasCulturais\Entities\File;
 
@@ -67,10 +66,20 @@ trait EntityFiles{
      * @return \MapasCulturais\Entities\File A File.
      */
     function getFile($group){
-        return App::i()->repo($this->getFileClassName())->findOneBy([
-            'owner' => $this,
-            'group' => $group
-        ]);
+        if($this->__files){
+            foreach($this->__files as $file){
+                if($file->group === $group){
+                    return $file;
+                }
+            }
+
+            return null;
+        }else{
+            return App::i()->repo($this->getFileClassName())->findOneBy([
+                'owner' => $this,
+                'group' => $group
+            ]);
+        }
     }
 
 
@@ -78,7 +87,7 @@ trait EntityFiles{
      * This entity uses files
      * @return bool true
      */
-    public function usesFiles(){
+    public static function usesFiles(){
         return true;
     }
 }

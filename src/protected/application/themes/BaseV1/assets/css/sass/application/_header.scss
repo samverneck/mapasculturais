@@ -223,7 +223,7 @@ body.action-search {
 }
 //** Events
 #entities-menu-event {
-    &.active, &:hover {
+    &.active, &:hover, &.current-entity-parent {
         border-top-color: $brand-event;
         color: $brand-event;
         a {
@@ -238,7 +238,7 @@ body.action-search {
 }
 //** Agents
 #entities-menu-agent {
-    &.active, &:hover {
+    &.active, &:hover, &.current-entity-parent {
         border-top-color: $brand-agent;
         color: $brand-event;
         a {
@@ -253,7 +253,7 @@ body.action-search {
 }
 //** Spaces
 #entities-menu-space {
-    &.active, &:hover {
+    &.active, &:hover, &.current-entity-parent {
         border-top-color: $brand-space;
         color: $brand-space;
         a {
@@ -268,9 +268,9 @@ body.action-search {
 }
 //** Projects
 #entities-menu-project {
-    &.active, &:hover {
+    &.active, &:hover, &.current-entity-parent {
         border-top-color: $brand-project;
-        color: $brand-event;
+        color: $brand-project;
         a {
             color: $brand-project;
         }
@@ -278,6 +278,22 @@ body.action-search {
     &.active {
         &:after {
             @include arrow(up, $caret-width-base, $brand-project);
+        }
+    }
+}
+
+//** Seals
+#entities-menu-seal {
+    &.active, &:hover, &.current-entity-parent {
+        border-top-color: $brand-seal;
+        color: $brand-seal;
+        a {
+            color: $brand-seal;
+        }
+    }
+    &.active {
+        &:after {
+            @include arrow(up, $caret-width-base, $brand-seal);
         }
     }
 }

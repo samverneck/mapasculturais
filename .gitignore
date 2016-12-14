@@ -16,3 +16,8 @@ src/assets
 .idea
 main.css
 main.css.map
+_apigen.phar
+.vagrant
+.DS_Store
+.composer/
+.bash_history

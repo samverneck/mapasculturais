@@ -24,30 +24,12 @@ class Project extends \MapasCulturais\Entity
         Traits\EntityMetaLists,
         Traits\EntityTaxonomies,
         Traits\EntityAgentRelation,
+        Traits\EntitySealRelation,
         Traits\EntityNested,
         Traits\EntityVerifiable,
-        Traits\EntitySoftDelete;
-
-    protected static $validations = [
-        'name' => [
-            'required' => 'O nome do projeto é obrigatório'
-        ],
-        'shortDescription' => [
-            'required' => 'A descrição curta é obrigatória',
-            'v::string()->length(0,400)' => 'A descrição curta deve ter no máximo 400 caracteres'
-        ],
-        'type' => [
-            'required' => 'O tipo do projeto é obrigatório',
-        ],
-        'registrationFrom' => [
-            '$this->validateDate($value)' => 'O valor informado não é uma data válida',
-            '!empty($this->registrationTo)' => 'Data final obrigatória caso data inicial preenchida'
-        ],
-        'registrationTo' => [
-            '$this->validateDate($value)' => 'O valor informado não é uma data válida',
-            '$this->validateRegistrationDates()' => 'A data final das inscrições deve ser maior ou igual a data inicial'
-        ]
-    ];
+        Traits\EntitySoftDelete,
+        Traits\EntityDraft,
+        Traits\EntityArchive;
 
     /**
      * @var integer
@@ -87,6 +69,12 @@ class Project extends \MapasCulturais\Entity
      */
     protected $longDescription;
 
+    /**
+     * @var \DateTime
+     *
+     * @ORM\Column(name="update_timestamp", type="datetime", nullable=true)
+     */
+    protected $updateTimestamp;
 
     /**
      * @var \DateTime
@@ -181,6 +169,13 @@ class Project extends \MapasCulturais\Entity
     public $registrationFileConfigurations;
 
     /**
+     * @var \MapasCulturais\Entities\RegistrationFieldConfiguration[] RegistrationFieldConfiguration
+     *
+     * @ORM\OneToMany(targetEntity="\MapasCulturais\Entities\RegistrationFieldConfiguration", mappedBy="owner", fetch="LAZY")
+     */
+    public $registrationFieldConfigurations;
+
+    /**
      * @var bool
      *
      * @ORM\Column(name="is_verified", type="boolean", nullable=false)
@@ -201,6 +196,15 @@ class Project extends \MapasCulturais\Entity
     protected $__files;
 
     /**
+     * @var \MapasCulturais\Entities\ProjectAgentRelation[] Agent Relations
+     *
+     * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\ProjectAgentRelation", mappedBy="owner", cascade="remove", orphanRemoval=true)
+     * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
+    */
+    protected $__agentRelations;
+
+
+    /**
      * @var \MapasCulturais\Entities\ProjectTermRelation[] TermRelation
      *
      * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\ProjectTermRelation", fetch="LAZY", mappedBy="owner", cascade="remove", orphanRemoval=true)
@@ -208,14 +212,65 @@ class Project extends \MapasCulturais\Entity
     */
     protected $__termRelations;
 
+
+    /**
+     * @var \MapasCulturais\Entities\ProjectSealRelation[] ProjectSealRelation
+     *
+     * @ORM\OneToMany(targetEntity="MapasCulturais\Entities\ProjectSealRelation", fetch="LAZY", mappedBy="owner", cascade="remove", orphanRemoval=true)
+     * @ORM\JoinColumn(name="id", referencedColumnName="object_id")
+    */
+    protected $__sealRelations;
+    
+    public function getEntityTypeLabel($plural = false) {
+        if ($plural)
+            return \MapasCulturais\i::__('Projetos');
+        else
+            return \MapasCulturais\i::__('Projeto');
+    }
+    
+    static function getValidations() {
+        return [
+            'name' => [
+                'required' => \MapasCulturais\i::__('O nome do projeto é obrigatório')
+            ],
+            'shortDescription' => [
+                'required' => \MapasCulturais\i::__('A descrição curta é obrigatória'),
+                'v::stringType()->length(0,400)' => \MapasCulturais\i::__('A descrição curta deve ter no máximo 400 caracteres')
+            ],
+            'type' => [
+                'required' => \MapasCulturais\i::__('O tipo do projeto é obrigatório'),
+            ],
+            'registrationFrom' => [
+                '$this->validateDate($value)' => \MapasCulturais\i::__('O valor informado não é uma data válida'),
+                '!empty($this->registrationTo)' => \MapasCulturais\i::__('Data final obrigatória caso data inicial preenchida')
+            ],
+            'registrationTo' => [
+                '$this->validateDate($value)' => \MapasCulturais\i::__('O valor informado não é uma data válida'),
+                '$this->validateRegistrationDates()' => \MapasCulturais\i::__('A data final das inscrições deve ser maior ou igual a data inicial')
+            ]
+        ];
+    }
+    
     function getEvents(){
         return $this->fetchByStatus($this->_events, self::STATUS_ENABLED);
     }
 
-    function getSentRegistrations(){
+    function getAllRegistrations(){
         // ============ IMPORTANTE =============//
         // @TODO implementar findSentByProject no repositório de inscrições
         $registrations = App::i()->repo('Registration')->findBy(['project' => $this]);
+
+        return $registrations;
+    }
+
+    /**
+     * Returns sent registrations
+     *
+     * @return \MapasCulturais\Entities\Registration[]
+     */
+    function getSentRegistrations(){
+        $registrations = $this->getAllRegistrations();
+
         $result = [];
         foreach($registrations as $re){
             if($re->status > 0)
@@ -321,6 +376,54 @@ class Project extends \MapasCulturais\Entity
             $app->rcache->save($cache_id, $locked);
             return $locked;
         }
+    }
+
+    protected function canUserCreateEvents($user) {
+        if ($user->is('guest')) {
+            return false;
+        }
+
+        if ($user->is('admin')) {
+            return true;
+        }
+
+        if ($this->canUser('@control')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    protected function canUserRequestEventRelation($user) {
+        if ($user->is('guest')) {
+            return false;
+        }
+
+        if ($user->is('admin')) {
+            return true;
+        }
+
+        if ($this->canUser('createEvents')) {
+            return true;
+        }
+
+        foreach ($this->getAgentRelations() as $relation) {
+            if ($relation->agent->userId == $user->id) {
+                return true;
+            }
+        }
+
+        if ($this->publishedRegistrations) {
+            foreach ($this->getSentRegistrations() as $resgistration) {
+                if ($resgistration->status === Registration::STATUS_APPROVED) {
+                    if ($resgistration->canUser('@control', $user)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     protected function canUserModifyRegistrationFields($user){

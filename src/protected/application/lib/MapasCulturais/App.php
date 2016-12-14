@@ -6,6 +6,7 @@ use Doctrine\ORM\EntityManager;
 use Doctrine\ORM\Mapping\Driver\AnnotationDriver;
 use Doctrine\Common\Annotations\AnnotationReader;
 use Doctrine\Common\Annotations\AnnotationRegistry;
+use SwiftMailer\SwiftMailer;
 
 /**
  * MapasCulturais Application class.
@@ -44,6 +45,7 @@ use Doctrine\Common\Annotations\AnnotationRegistry;
  */
 class App extends \Slim\Slim{
     use \MapasCulturais\Traits\MagicGetter,
+        \MapasCulturais\Traits\MagicSetter,
         \MapasCulturais\Traits\Singleton;
 
     /**
@@ -122,7 +124,8 @@ class App extends \Slim\Slim{
             ],
             'api_outputs' => [],
             'image_transformations' => [],
-            'registration_agent_relations' => []
+            'registration_agent_relations' => [],
+            'registration_fields' => []
         ];
 
     protected $_registerLocked = true;
@@ -133,6 +136,8 @@ class App extends \Slim\Slim{
 
     protected $_accessControlEnabled = true;
     protected $_workflowEnabled = true;
+
+    protected $_plugins = [];
 
     /**
      * Initializes the application instance.
@@ -182,8 +187,6 @@ class App extends \Slim\Slim{
         }
         $this->_cache->setNamespace($config['app.cache.namespace']);
 
-
-
         spl_autoload_register(function($class) use ($config){
             $cache_id = "AUTOLOAD_CLASS:$class";
             if($config['app.useRegisteredAutoloadCache'] && $this->cache->contains($cache_id)){
@@ -192,7 +195,15 @@ class App extends \Slim\Slim{
                 return true;
             }
 
-            foreach($config['namespaces'] as $namespace => $base_dir){
+            $namespaces = $config['namespaces'];
+
+            foreach($config['plugins'] as $plugin){
+                $dir = isset($plugin['path']) ? $plugin['path'] : PLUGINS_PATH . $plugin['namespace'];
+
+                $namespaces[$plugin['namespace']] = $dir;
+            }
+
+            foreach($namespaces as $namespace => $base_dir){
                 if(strpos($class, $namespace) === 0){
                     $path = str_replace('\\', '/', str_replace($namespace, $base_dir, $class) . '.php' );
 
@@ -204,8 +215,23 @@ class App extends \Slim\Slim{
                     }
                 }
             }
-
         });
+
+        // extende a config with theme config files
+
+        $theme_class = "\\" . $config['themes.active'] . '\Theme';
+        $theme_path = $theme_class::getThemeFolder() . '/';
+
+        if (file_exists($theme_path . 'conf-base.php')) {
+            $theme_config = require $theme_path . 'conf-base.php';
+            $config = array_merge($config, $theme_config);
+        }
+
+        if (file_exists($theme_path . 'config.php')) {
+            $theme_config = require $theme_path . 'config.php';
+            $config = array_merge($config, $theme_config);
+        }
+
 
         $config['app.mode'] = key_exists('app.mode', $config) ? $config['app.mode'] : 'production';
 
@@ -229,6 +255,18 @@ class App extends \Slim\Slim{
             'mode' => $this->_config['app.mode']
         ]);
 
+        foreach($config['plugins'] as $slug => $plugin){
+            $_namespace = $plugin['namespace'];
+            $_class = isset($plugin['class']) ? $plugin['class'] : 'Plugin';
+            $plugin_class_name = "$_namespace\\$_class";
+
+            $plugin_config = isset($plugin['config']) && is_array($plugin['config']) ? $plugin['config'] : [];
+
+            $slug = is_numeric($slug) ? $_namespace : $slug;
+
+            $this->_plugins[$slug] = new $plugin_class_name($plugin_config);
+        }
+
         $config = $this->_config;
 
         // custom log writer
@@ -246,9 +284,6 @@ class App extends \Slim\Slim{
         // ========== BOOTSTRAPING DOCTRINE ========== //
         // annotation driver
         $doctrine_config = Setup::createConfiguration($config['doctrine.isDev']);
-
-        $classLoader = new \Doctrine\Common\ClassLoader('Entities', __DIR__);
-        $classLoader->register();
 
         $driver = new AnnotationDriver(new AnnotationReader());
 
@@ -348,13 +383,16 @@ class App extends \Slim\Slim{
 
         $this->register();
 
-                // =============== AUTH ============== //
-        $auth_class_name = $config['auth.provider'][0] === '\\' ? $config['auth.provider'] : 'MapasCulturais\AuthProviders\\' . $config['auth.provider'];
 
-        $this->_auth = new $auth_class_name($config['auth.config']);
+        // =============== AUTH ============== //
 
-
-        $this->_auth->setCookies();
+        if($token = $this->request()->headers->get('authorization')){
+            $this->_auth = new AuthProviders\JWT(['token' => $token]);
+        }else{
+            $auth_class_name = strpos($config['auth.provider'], '\\') !== false ? $config['auth.provider'] : 'MapasCulturais\AuthProviders\\' . $config['auth.provider'];
+            $this->_auth = new $auth_class_name($config['auth.config']);
+            $this->_auth->setCookies();
+        }
 
         // initialize theme
         $this->view->init();
@@ -363,12 +401,17 @@ class App extends \Slim\Slim{
 
         // run plugins
         foreach($config['plugins.enabled'] as $plugin){
-            include PLUGINS_PATH.$plugin.'.php';
+            if(file_exists(PLUGINS_PATH.$plugin.'.php')){
+                include PLUGINS_PATH.$plugin.'.php';
+            }
         }
         // ===================================== //
 
         if(defined('DB_UPDATES_FILE') && file_exists(DB_UPDATES_FILE))
             $this->_dbUpdates();
+            
+        //Load defaut translation textdomain
+        i::load_default_textdomain();
 
         return $this;
     }
@@ -377,6 +420,10 @@ class App extends \Slim\Slim{
         $this->applyHookBoundTo($this, 'mapasculturais.run:before');
         parent::run();
         $this->applyHookBoundTo($this, 'mapasculturais.run:after');
+    }
+
+    function isEnabled($entity){
+        return $this->_config['app.enabled.' . $entity];
     }
 
     function enableAccessControl(){
@@ -403,7 +450,7 @@ class App extends \Slim\Slim{
         return $this->_workflowEnabled;
     }
 
-    protected function _dbUpdates(){
+    function _dbUpdates(){
         $this->disableAccessControl();
 
         $executed_updates = [];
@@ -451,23 +498,48 @@ class App extends \Slim\Slim{
     private $_registered = false;
 
     public function register(){
+        //        phpdbg_break_next();
+
         if($this->_registered)
             return;
 
         $this->_registered = true;
 
         // get types and metadata configurations
-        $space_types = include APPLICATION_PATH.'/conf/space-types.php';
+        if ($theme_space_types = $this->view->resolveFilename('','space-types.php')) {
+            $space_types = include $theme_space_types;
+        } else {
+            $space_types = include APPLICATION_PATH.'/conf/space-types.php';
+        }
         $space_meta = key_exists('metadata', $space_types) && is_array($space_types['metadata']) ? $space_types['metadata'] : [];
 
-        $agent_types = include APPLICATION_PATH.'/conf/agent-types.php';
+        if ($theme_agent_types = $this->view->resolveFilename('','agent-types.php')) {
+            $agent_types = include $theme_agent_types;
+        } else {
+            $agent_types = include APPLICATION_PATH.'/conf/agent-types.php';
+        }
         $agents_meta = key_exists('metadata', $agent_types) && is_array($agent_types['metadata']) ? $agent_types['metadata'] : [];
 
-        $event_types = include APPLICATION_PATH.'/conf/event-types.php';
+        if ($theme_event_types = $this->view->resolveFilename('','event-types.php')) {
+            $event_types = include $theme_event_types;
+        } else {
+            $event_types = include APPLICATION_PATH.'/conf/event-types.php';
+        }
         $event_meta = key_exists('metadata', $event_types) && is_array($event_types['metadata']) ? $event_types['metadata'] : [];
 
-        $project_types = include APPLICATION_PATH.'/conf/project-types.php';
+        if ($theme_project_types = $this->view->resolveFilename('','project-types.php')) {
+            $project_types = include $theme_project_types;
+        } else {
+            $project_types = include APPLICATION_PATH.'/conf/project-types.php';
+        }
         $projects_meta = key_exists('metadata', $project_types) && is_array($project_types['metadata']) ? $project_types['metadata'] : [];
+
+        if ($theme_seal_types = $this->view->resolveFilename('','seal-types.php')) {
+            $seal_types = include $theme_seal_types;
+        } else {
+            $seal_types = include APPLICATION_PATH.'/conf/seal-types.php';
+        }
+        $seals_meta = key_exists('metadata', $seal_types) && is_array($seal_types['metadata']) ? $seal_types['metadata'] : [];
 
         // register auth providers
         // @TODO veridicar se isto está sendo usado, se não remover
@@ -483,14 +555,19 @@ class App extends \Slim\Slim{
         $this->registerController('geoDivision',    'MapasCulturais\Controllers\GeoDivision');
 
         $this->registerController('user',   'MapasCulturais\Controllers\User');
-        
+
         $this->registerController('event',   'MapasCulturais\Controllers\Event');
         $this->registerController('agent',   'MapasCulturais\Controllers\Agent');
+        $this->registerController('seal',   'MapasCulturais\Controllers\Seal');
         $this->registerController('space',   'MapasCulturais\Controllers\Space');
         $this->registerController('project', 'MapasCulturais\Controllers\Project');
 
+
+        $this->registerController('app',   'MapasCulturais\Controllers\UserApp');
+
         $this->registerController('registration',                   'MapasCulturais\Controllers\Registration');
         $this->registerController('registrationFileConfiguration',  'MapasCulturais\Controllers\RegistrationFileConfiguration');
+        $this->registerController('registrationFieldConfiguration', 'MapasCulturais\Controllers\RegistrationFieldConfiguration');
 
         $this->registerController('term',           'MapasCulturais\Controllers\Term');
         $this->registerController('file',           'MapasCulturais\Controllers\File');
@@ -505,6 +582,63 @@ class App extends \Slim\Slim{
         $this->registerApiOutput('MapasCulturais\ApiOutputs\Html');
         $this->registerApiOutput('MapasCulturais\ApiOutputs\Excel');
 
+        // register registration field types
+
+        $this->registerRegistrationFieldType(new Definitions\RegistrationFieldType([
+            'slug' => 'textarea',
+            'name' => \MapasCulturais\i::__('Campo de texto (textarea)')
+        ]));
+
+        $this->registerRegistrationFieldType(new Definitions\RegistrationFieldType([
+            'slug' => 'text',
+            'name' => \MapasCulturais\i::__('Campo de texto simples')
+        ]));
+
+        $this->registerRegistrationFieldType(new Definitions\RegistrationFieldType([
+            'slug' => 'date',
+            'name' => \MapasCulturais\i::__('Campo de data')
+        ]));
+
+        $this->registerRegistrationFieldType(new Definitions\RegistrationFieldType([
+            'slug' => 'url',
+            'name' => \MapasCulturais\i::__('Campo de URL (link)'),
+            'validations' => [
+                'v::url()' => \MapasCulturais\i::__('O valor não é uma URL válida')
+            ]
+        ]));
+
+        $this->registerRegistrationFieldType(new Definitions\RegistrationFieldType([
+            'slug' => 'email',
+            'name' => \MapasCulturais\i::__('Campo de email'),
+            'validations' => [
+                'v::email()' => \MapasCulturais\i::__('O valor não é um endereço de email válido')
+            ]
+        ]));
+
+        $this->registerRegistrationFieldType(new Definitions\RegistrationFieldType([
+            'slug' => 'select',
+            'name' => \MapasCulturais\i::__('Seleção única (select)'),
+            'requireValuesConfiguration' => true
+        ]));
+
+//        $this->registerRegistrationFieldType(new Definitions\RegistrationFieldType([
+//            'slug' => 'radio',
+//            'name' => \MapasCulturais\i::__('Seleção única (radio)'),
+//            'requireValuesConfiguration' => true
+//        ]));
+
+        $this->registerRegistrationFieldType(new Definitions\RegistrationFieldType([
+            'slug' => 'checkboxes',
+            'name' => \MapasCulturais\i::__('Seleção múltipla (checkboxes)'),
+            'requireValuesConfiguration' => true,
+            'serialize' => function (array $value) {
+                return json_encode($value);
+            },
+            'unserialize' => function ($value) {
+                return json_decode($value);
+            }
+        ]));
+
         /**
          * @todo melhores mensagens de erro
          */
@@ -512,11 +646,11 @@ class App extends \Slim\Slim{
         // all file groups
         $file_groups = [
             'downloads' => new Definitions\FileGroup('downloads'),
-            'avatar' => new Definitions\FileGroup('avatar', ['^image/(jpeg|png)$'], 'The uploaded file is not a valid image.', true),
-            'header' => new Definitions\FileGroup('header', ['^image/(jpeg|png)$'], 'The uploaded file is not a valid image.', true),
-            'gallery' => new Definitions\FileGroup('gallery', ['^image/(jpeg|png)$'], 'The uploaded file is not a valid image.', false),
-            'registrationFileConfiguration' => new Definitions\FileGroup('registrationFileTemplate', ['^application/.*'], 'The uploaded file is not a valid document.', true),
-            'rules' => new Definitions\FileGroup('rules', ['^application/.*'], 'The uploaded file is not a valid document.', true),
+            'avatar' => new Definitions\FileGroup('avatar', ['^image/(jpeg|png)$'], \MapasCulturais\i::__('O arquivo enviado não é uma imagem válida.'), true),
+            'header' => new Definitions\FileGroup('header', ['^image/(jpeg|png)$'], \MapasCulturais\i::__('O arquivo enviado não é uma imagem válida.'), true),
+            'gallery' => new Definitions\FileGroup('gallery', ['^image/(jpeg|png)$'], \MapasCulturais\i::__('O arquivo enviado não é uma imagem válida.'), false),
+            'registrationFileConfiguration' => new Definitions\FileGroup('registrationFileTemplate', ['^application/.*'], \MapasCulturais\i::__('O arquivo enviado não é um documento válido.'), true),
+            'rules' => new Definitions\FileGroup('rules', ['^application/.*'], \MapasCulturais\i::__('O arquivo enviado não é um documento válido.'), true),
         ];
 
         // register file groups
@@ -541,6 +675,11 @@ class App extends \Slim\Slim{
         $this->registerFileGroup('project', $file_groups['gallery']);
         $this->registerFileGroup('project', $file_groups['rules']);
 
+        $this->registerFileGroup('seal', $file_groups['downloads']);
+        $this->registerFileGroup('seal', $file_groups['header']);
+        $this->registerFileGroup('seal', $file_groups['avatar']);
+        $this->registerFileGroup('seal', $file_groups['gallery']);
+
         $this->registerFileGroup('registrationFileConfiguration', $file_groups['registrationFileConfiguration']);
 
         $image_transformations = include APPLICATION_PATH.'/conf/image-transformations.php';
@@ -550,7 +689,7 @@ class App extends \Slim\Slim{
 
         // registration agent relations
 
-        foreach($this->config['registration.agentRelations'] as $config){
+        foreach($this->_config['registration.agentRelations'] as $config){
             $def = new Definitions\RegistrationAgentRelation($config);
             $projects_meta[$def->metadataName] = $def->getMetadataConfiguration();
 
@@ -572,7 +711,7 @@ class App extends \Slim\Slim{
                         ]
                     ],
                 ],
-                'The uploaded file is not a valid image.',
+                \MapasCulturais\i::__('O arquivo enviado não é uma imagem válida.'),
                 true
             ),
             'videos' => new Definitions\MetaListGroup('videos',
@@ -583,12 +722,12 @@ class App extends \Slim\Slim{
                     'value' => [
                         'label' => 'Link',
                         'validations' => [
-                            'required' => 'O link do vídeo é obrigatório',
+                            'required' => \MapasCulturais\i::__('O link do vídeo é obrigatório'),
                             "v::url('vimeo.com')" => "Insira um link de um vídeo do Vimeo ou Youtube"
                         ]
                     ],
                 ],
-                'The uploaded file is not a valid image.',
+                \MapasCulturais\i::__('O arquivo enviado não é uma imagem válida.'),
                 true
             ),
         ];
@@ -605,6 +744,9 @@ class App extends \Slim\Slim{
 
         $this->registerMetaListGroup('project', $metalist_groups['links']);
         $this->registerMetaListGroup('project', $metalist_groups['videos']);
+
+        $this->registerMetaListGroup('seal', $metalist_groups['links']);
+        $this->registerMetaListGroup('seal', $metalist_groups['videos']);
 
         // register space types and spaces metadata
         foreach($space_types['items'] as $group_name => $group_config){
@@ -700,8 +842,30 @@ class App extends \Slim\Slim{
             }
         }
 
+        // register seal time unit types
+		$entity_class = 'MapasCulturais\Entities\Seal';
+
+        foreach($seal_types['items'] as $type_id => $type_config){
+        	$type = new Definitions\EntityType($entity_class, $type_id, $type_config['name']);
+        	$this->registerEntityType($type);
+
+        	// add projects metadata definition to project type
+            foreach($seals_meta as $meta_key => $meta_config)
+                if(!key_exists($meta_key, $type_meta) || key_exists($meta_key, $type_meta) && is_null($type_config['metadata'][$meta_key]))
+                    $type_config['metadata'][$meta_key] = $meta_config;
+
+            foreach($type_config['metadata'] as $meta_key => $meta_config){
+                $metadata = new Definitions\Metadata($meta_key, $meta_config);
+                $this->registerMetadata($metadata, $entity_class, $type_id);
+            }
+        }
+
         // register taxonomies
-        $taxonomies = include APPLICATION_PATH . '/conf/taxonomies.php';
+        if ($theme_taxonomies = $this->view->resolveFilename('','taxonomies.php')) {
+            $taxonomies = include $theme_taxonomies;
+        } else {
+            $taxonomies = include APPLICATION_PATH . '/conf/taxonomies.php';
+        }
 
         foreach($taxonomies as $taxonomy_id => $taxonomy_definition){
             $taxonomy_slug = $taxonomy_definition['slug'];
@@ -720,14 +884,18 @@ class App extends \Slim\Slim{
 
         $this->view->register();
 
-        $this->applyHook('app.register');
+        foreach($this->_plugins as $plugin){
+            $plugin->register();
+        }
+
+        $this->applyHookBoundTo($this, 'app.register',[&$this->_register]);
     }
 
 
 
     function getRegisteredGeoDivisions(){
         $result = [];
-        foreach($this->config['app.geoDivisionsHierarchy'] as $key => $name) {
+        foreach($this->_config['app.geoDivisionsHierarchy'] as $key => $name) {
             $d = new \stdClass();
             $d->key = $key;
             $d->name = $name;
@@ -923,7 +1091,7 @@ class App extends \Slim\Slim{
         else if (!is_array($hookArg))
             $hookArg = [$hookArg];
 
-        if ($this->config['app.log.hook'])
+        if ($this->_config['app.log.hook'])
             $this->log->debug('APPLY HOOK >> ' . $name);
 
         $callables = $this->_getHookCallables($name);
@@ -945,7 +1113,7 @@ class App extends \Slim\Slim{
         else if (!is_array($hookArg))
             $hookArg = [$hookArg];
 
-        if ($this->config['app.log.hook'])
+        if ($this->_config['app.log.hook'])
             $this->log->debug('APPLY HOOK BOUND TO >> ' . $name);
 
         $callables = $this->_getHookCallables($name);
@@ -959,9 +1127,6 @@ class App extends \Slim\Slim{
     function _getHookCallables($name) {
         $exclude_list = [];
         $result = [];
-//
-//        if(isset($this->_hookCache[$name]))
-//            return $this->_hookCache[$name];
 
         foreach ($this->_excludeHooks as $hook => $callables) {
             if (preg_match($hook, $name))
@@ -1127,7 +1292,7 @@ class App extends \Slim\Slim{
      * @return string the base url
      */
     public function getBaseUrl(){
-        return $this->config['base.url'];
+        return $this->_config['base.url'];
     }
 
     /**
@@ -1135,7 +1300,7 @@ class App extends \Slim\Slim{
      * @return string the asset url
      */
     public function getAssetUrl(){
-        return isset($this->config['base.assetUrl']) ? $this->config['base.assetUrl'] : $this->getBaseUrl() . 'assets/';
+        return isset($this->_config['base.assetUrl']) ? $this->_config['base.assetUrl'] : $this->getBaseUrl() . 'assets/';
     }
 
     /**
@@ -1186,8 +1351,13 @@ class App extends \Slim\Slim{
 
     }
 
-    public function getRoleName($role){
+    public function getRoles() {
         $roles = include APPLICATION_PATH . 'conf/roles.php';
+        return $roles;
+    }
+
+    public function getRoleName($role){
+        $roles = $this->getRoles();
         return key_exists($role, $roles) ? $roles[$role]['name'] : $role;
     }
 
@@ -1338,6 +1508,17 @@ class App extends \Slim\Slim{
         $this->_register['controllers_view_dirs'][$id] = $view_dir ? $view_dir : $id;
     }
 
+    public function getRegisteredControllers($return_controller_object = false){
+        $controllers = $this->_register['controllers'];
+        if($return_controller_object){
+            foreach($controllers as $id => $class){
+                $controllers[$id] = $class::i();
+            }
+        }
+
+        return $controllers;
+    }
+
     /**
      * Returns the controller object with the given id.
      *
@@ -1401,7 +1582,7 @@ class App extends \Slim\Slim{
      *
      * @see \MapasCulturais\App::getControllerByClass()
      *
-     * @return \MapasCulturais\Controller|null The controller
+     * @return \MapasCulturais\Controllers\EntityController|null The controller
      */
     public function getControllerByEntity($entity){
         if(is_object($entity))
@@ -1616,6 +1797,22 @@ class App extends \Slim\Slim{
         return @$this->_register['entity_types'][$entity];
     }
 
+    function registerRegistrationFieldType(Definitions\RegistrationFieldType $registration_field){
+        $this->_register['registration_fields'][$registration_field->slug] = $registration_field;
+    }
+
+    function getRegisteredRegistrationFieldTypes(){
+        return $this->_register['registration_fields'];
+    }
+
+    function getRegisteredRegistrationFieldTypeBySlug($slug) {
+        if (isset($this->_register['registration_fields'][$slug])) {
+            return $this->_register['registration_fields'][$slug];
+        } else {
+            return null;
+        }
+    }
+
     /**
      * Register an Entity Metadata Definition.
      *
@@ -1624,6 +1821,15 @@ class App extends \Slim\Slim{
      * @param int $entity_type_id The Entity Type id
      */
     function registerMetadata(Definitions\Metadata $metadata, $entity_class, $entity_type_id = null){
+        if($entity_class::usesTypes() && is_null($entity_type_id)){
+            foreach($this->getRegisteredEntityTypes($entity_class) as $type){
+                if($type){
+                   $this->registerMetadata($metadata, $entity_class, $type->id);
+                }
+            }
+            return;
+        }
+
         $key = is_null($entity_type_id) ? $entity_class : $entity_class . ':' . $entity_type_id;
         if(!key_exists($key, $this->_register['entity_metadata_definitions']))
             $this->_register['entity_metadata_definitions'][$key] = [];
@@ -1859,11 +2065,96 @@ class App extends \Slim\Slim{
     }
 
     /**************
+     * Utils
+     **************/
+
+    function getManagedEntity(Entity $entity){
+        if($entity->getEntityState() > 2){
+            $entity = App::i()->repo($entity->getClassName())->find($entity->id);
+            $entity->refresh();
+        }
+
+        return $entity;
+    }
+
+    /**
+     * returns Swift_Mailer instance
+     *
+     * @return \Swift_Mailer Mailer object
+     */
+    function getMailer() {
+        $transport = [];
+
+        if(!in_array('mailer',$this->_config['plugins.enabled'])) {
+            return;
+        }
+
+        if(isset($this->_config['mailer.user']) &&
+            isset($this->_config['mailer.psw']) &&
+            isset($this->_config['mailer.server']) &&
+            isset($this->_config['mailer.port']) &&
+            isset($this->_config['mailer.protocol'])) {
+            $transport = \Swift_SmtpTransport::newInstance($this->_config['mailer.server'],
+                                                            $this->_config['mailer.port'],
+                                                            $this->_config['mailer.protocol'])
+                                                            ->setUsername($this->_config['mailer.user'])
+                                                            ->setPassword($this->_config['mailer.psw']);
+        }
+
+        $instance = \Swift_Mailer::newInstance($transport);
+
+        return $instance;
+    }
+
+    /**
+     *
+     * @param array $args
+     * @return \Swift_Message
+     */
+    function createMailMessage(array $args = []){
+        $message = \Swift_Message::newInstance();
+
+        if($this->_config['mailer.from']){
+            $message->setFrom($this->_config['mailer.from']);
+        }
+
+        foreach($args as $key => $value){
+            $key = ucfirst($key);
+            $method_name = 'set' . $key;
+
+            if(method_exists($message, $method_name)){
+                $message->$method_name($value);
+            }
+        }
+
+        return $message;
+    }
+
+    function sendMailMessage(\Swift_Message $message){
+        $failures = [];
+        $mailer = $this->getMailer();
+
+        if(in_array('mailer',$this->_config['plugins.enabled']) && !$mailer->send($message,$failures)) {
+            App::i()->log->debug($failures);
+        }
+    }
+
+    function createAndSendMailMessage(array $args = []){
+        $message = $this->createMailMessage($args);
+        $this->sendMailMessage($message);
+    }
+
+
+    /**************
      * GetText
      **************/
 
+    static function getCurrentLCode(){
+        return App::i()->_config['app.lcode'];
+    }
 
-    static function getTranslations($lcode, $domain = null){
+
+    static function getTranslations($lcode, $domain = null) {
         $app = App::i();
         $log = key_exists('app.log.translations', $app->_config) && $app->_config['app.log.translations'];
 
@@ -1871,29 +2162,35 @@ class App extends \Slim\Slim{
 
         $use_cache = key_exists('app.useTranslationsCache', $app->_config) && $app->_config['app.useTranslationsCache'];
 
-        if($use_cache && $app->cache->contains($cache_id))
-                return $app->cache->fetch($cache_id);
+        if ($use_cache && $app->cache->contains($cache_id)) {
+            return $app->cache->fetch($cache_id);
+        }
 
-        $translations_filename = APPLICATION_PATH .( $domain ? "translations/{$domain}.{$lcode}.php" : "translations/{$lcode}.php" );
+        $translations_filename = APPLICATION_PATH . ( $domain ? "translations/{$domain}/{$lcode}.php" : "translations/{$lcode}.php" );
 
-        if(file_exists($translations_filename)){
+        if (file_exists($translations_filename)) {
             $translations = include $translations_filename;
-        }else{
-            if($log)
-                $app->log->warn ("TXT > missing '$lcode' translation file for domain '$domain'");
+        } else {
+            if ($log) {
+                $app->applyHook("txt({$domain}.{$lcode}).missingFile");
+                $app->log->warn("TXT > missing '$lcode' translation file for domain '$domain'");
+            }
             $translations = [];
         }
-        if($use_cache)
-            $app->cache->save ($cache_id, $translations);
+        if ($use_cache) {
+            $app->cache->save($cache_id, $translations);
+        }
 
         return $translations;
-
     }
 
     static function txt($message, $domain = null, $lcode = null){
         $app = App::i();
         $message = trim($message);
-        $lcode = key_exists('app.lcode', $app->_config) ? $app->_config['app.lcode'] : 'en';
+
+        if(is_null($lcode)){
+            $lcode = $app->getCurrentLCode();
+        }
 
         $translations = self::getTranslations($lcode, $domain);
         $backtrace = debug_backtrace(3,1)[0];
@@ -1906,6 +2203,7 @@ class App extends \Slim\Slim{
         }elseif(key_exists($message, $translations)){
             $message = $translations[$message];
         }elseif($log){
+            $app->applyHook("txt({$domain}.{$lcode}).missingTranslation");
             $app->log->warn ("TXT > missing '$lcode' translation for message '$message' in domain '$domain'");
         }
 
@@ -1914,17 +2212,19 @@ class App extends \Slim\Slim{
 
     }
 
-    static function txts($singular_message, $plural_message, $n, $domain = null){
-        if($n === 1)
+    static function txts($singular_message, $plural_message, $n, $domain = null) {
+        if ($n === 1) {
             return self::txt($singular_message, $domain);
-        else
+        } else {
             return self::txt($plural_message, $domain);
+        }
     }
 
-
-    function getReadableName($id){
-        if (array_key_exists($id, $this->_config['routes']['readableNames']))
+    function getReadableName($id) {
+        if (array_key_exists($id, $this->_config['routes']['readableNames'])) {
             return $this->_config['routes']['readableNames'][$id];
+        }
         return null;
     }
+
 }
